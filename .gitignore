@@ -1,0 +1,10 @@
+node_modules
+dist
+.wrangler
+.wrangler.dev.vars*
+.dev.vars*
+.env*
+worker-configuration.d.ts
+*.tsbuildinfo
+coverage
+.DS_Store
