@@ -1,7 +1,8 @@
 import { timingSafeEqual } from "node:crypto";
 
 const encoder = new TextEncoder();
-const PASSWORD_ITERATIONS = 120_000;
+const PASSWORD_ITERATIONS = 10_000;
+const MIN_PASSWORD_ITERATIONS = 5_000;
 const SESSION_DAYS = 30;
 
 type JsonObject = Record<string, unknown>;
@@ -134,7 +135,7 @@ async function verifyPassword(password: string, stored: string): Promise<boolean
   const iterations = Number(iterationValue);
   const salt = hexToBytes(saltValue ?? "");
   const expected = hexToBytes(expectedValue ?? "");
-  if (!Number.isInteger(iterations) || iterations < 50_000 || salt.length !== 16 || expected.length !== 32) {
+  if (!Number.isInteger(iterations) || iterations < MIN_PASSWORD_ITERATIONS || salt.length !== 16 || expected.length !== 32) {
     return false;
   }
   const key = await crypto.subtle.importKey(
