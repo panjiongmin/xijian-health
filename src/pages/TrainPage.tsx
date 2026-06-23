@@ -18,6 +18,10 @@ import { TrainingOrb } from "../components/TrainingOrb";
 import type { TrainingCompleteResult } from "../types";
 
 type TrainingPhase = "ready" | "left" | "switch" | "right" | "relax" | "complete";
+type TrainingPreference = {
+  cycleSeconds: number;
+  minScale: number;
+};
 
 const phaseDuration: Record<Exclude<TrainingPhase, "ready" | "complete">, number> = {
   left: 60,
@@ -25,6 +29,37 @@ const phaseDuration: Record<Exclude<TrainingPhase, "ready" | "complete">, number
   right: 60,
   relax: 30,
 };
+
+const DEFAULT_TRAINING_PREFERENCE: TrainingPreference = {
+  cycleSeconds: 6,
+  minScale: 0.74,
+};
+
+const TRAINING_PREFERENCE_KEY = "xijian-training-preference";
+
+function clampNumber(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizePreference(value: Partial<TrainingPreference>): TrainingPreference {
+  return {
+    cycleSeconds: clampNumber(Number(value.cycleSeconds ?? DEFAULT_TRAINING_PREFERENCE.cycleSeconds), 3, 10),
+    minScale: clampNumber(Number(value.minScale ?? DEFAULT_TRAINING_PREFERENCE.minScale), 0.5, 0.9),
+  };
+}
+
+function loadTrainingPreference(): TrainingPreference {
+  try {
+    const stored = localStorage.getItem(TRAINING_PREFERENCE_KEY);
+    if (!stored) return DEFAULT_TRAINING_PREFERENCE;
+    const parsed = JSON.parse(stored) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return DEFAULT_TRAINING_PREFERENCE;
+    return normalizePreference(parsed);
+  } catch {
+    return DEFAULT_TRAINING_PREFERENCE;
+  }
+}
 
 const phaseCopy: Record<Exclude<TrainingPhase, "ready" | "complete">, { title: string; instruction: string }> = {
   left: { title: "左眼专注", instruction: "轻遮右眼，注视中心的小点" },
@@ -59,9 +94,32 @@ export function TrainPage() {
   const [sharing, setSharing] = useState(false);
   const [shared, setShared] = useState(false);
   const [error, setError] = useState("");
+  const [preference, setPreference] = useState<TrainingPreference>(() => loadTrainingPreference());
   const savedRef = useRef(false);
 
   const isActive = activePhases.includes(phase as Exclude<TrainingPhase, "ready" | "complete">);
+  const cycleLabel = preference.cycleSeconds.toFixed(preference.cycleSeconds % 1 === 0 ? 0 : 1);
+  const minCirclePercent = Math.round(preference.minScale * 100);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(TRAINING_PREFERENCE_KEY, JSON.stringify(preference));
+    } catch {
+      // Preference persistence is optional. Training should still work if storage is blocked.
+    }
+  }, [preference]);
+
+  const updatePreference = (value: Partial<TrainingPreference>) => {
+    setPreference((current) => normalizePreference({ ...current, ...value }));
+  };
+
+  const adjustCycleSeconds = (delta: number) => {
+    setPreference((current) => normalizePreference({ ...current, cycleSeconds: current.cycleSeconds + delta }));
+  };
+
+  const adjustMinScale = (delta: number) => {
+    setPreference((current) => normalizePreference({ ...current, minScale: current.minScale + delta }));
+  };
 
   const start = () => {
     setError("");
@@ -206,7 +264,12 @@ export function TrainPage() {
             <span>{currentCopy.title}</span>
             <h1>{currentCopy.instruction}</h1>
           </div>
-          <TrainingOrb paused={paused || phase === "switch"} label={currentCopy.instruction} />
+          <TrainingOrb
+            paused={paused || phase === "switch"}
+            label={currentCopy.instruction}
+            cycleSeconds={preference.cycleSeconds}
+            minScale={preference.minScale}
+          />
         </div>
 
         <footer className="training-controls">
@@ -298,6 +361,56 @@ export function TrainPage() {
           <div><Check /><span>遮挡眼睛时不要按压眼球</span></div>
           <div><Check /><span>出现明显不适时立即停止</span></div>
         </div>
+        <div className="training-preference-panel" aria-label="训练参数">
+          <div className="preference-heading">
+            <span>训练参数</span>
+            <strong>速度 {cycleLabel} 秒，最小 {minCirclePercent}%</strong>
+          </div>
+          <div className="preference-slider">
+            <label htmlFor="orb-cycle-seconds">
+              <strong>圆圈速度</strong>
+              <small>每次放大缩小的周期，数值越小越快</small>
+            </label>
+            <div className="preference-range-stack">
+              <input
+                id="orb-cycle-seconds"
+                type="range"
+                min="3"
+                max="10"
+                step="0.5"
+                value={preference.cycleSeconds}
+                onChange={(event) => updatePreference({ cycleSeconds: Number(event.target.value) })}
+                aria-valuetext={`${cycleLabel} 秒一轮`}
+              />
+              <div className="preference-stepper" aria-label="调整圆圈速度">
+                <button type="button" onClick={() => adjustCycleSeconds(0.5)}>慢一点</button>
+                <button type="button" onClick={() => adjustCycleSeconds(-0.5)}>快一点</button>
+              </div>
+            </div>
+          </div>
+          <div className="preference-slider">
+            <label htmlFor="orb-min-scale">
+              <strong>最小可见圆圈</strong>
+              <small>调整圆圈收缩时的大小，敏感时可以调大</small>
+            </label>
+            <div className="preference-range-stack">
+              <input
+                id="orb-min-scale"
+                type="range"
+                min="0.5"
+                max="0.9"
+                step="0.02"
+                value={preference.minScale}
+                onChange={(event) => updatePreference({ minScale: Number(event.target.value) })}
+                aria-valuetext={`收缩到 ${minCirclePercent}%`}
+              />
+              <div className="preference-stepper" aria-label="调整最小可见圆圈">
+                <button type="button" onClick={() => adjustMinScale(-0.02)}>小一点</button>
+                <button type="button" onClick={() => adjustMinScale(0.02)}>大一点</button>
+              </div>
+            </div>
+          </div>
+        </div>
         <label className="checkbox-field safety-check">
           <input type="checkbox" checked={safetyAccepted} onChange={(event) => setSafetyAccepted(event.target.checked)} />
           <span>我已了解：这是一项一般性的用眼休息练习，不替代医疗诊断或治疗。</span>
@@ -308,7 +421,12 @@ export function TrainPage() {
         </button>
       </div>
       <div className="ready-visual">
-        <TrainingOrb compact label="练习预览" />
+        <TrainingOrb
+          compact
+          label={`练习预览：${cycleLabel} 秒一轮，最小 ${minCirclePercent}%`}
+          cycleSeconds={preference.cycleSeconds}
+          minScale={preference.minScale}
+        />
         <div className="duration-note"><Eye weight="duotone" /><span>左右眼分别进行，双眼放松结束</span></div>
       </div>
     </div>

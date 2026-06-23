@@ -62,6 +62,10 @@ textarea {
   font: inherit;
 }
 
+input[type="range"] {
+  accent-color: var(--accent-strong);
+}
+
 button,
 a {
   -webkit-tap-highlight-color: transparent;
@@ -458,7 +462,7 @@ h3 {
   border-radius: 50%;
   background: color-mix(in srgb, var(--accent) 82%, var(--surface));
   box-shadow: inset 0 0 0 12px color-mix(in srgb, var(--surface) 15%, transparent);
-  animation: breathe-scale 6s cubic-bezier(0.42, 0, 0.58, 1) infinite alternate;
+  animation: breathe-scale var(--orb-cycle, 6s) cubic-bezier(0.42, 0, 0.58, 1) infinite alternate;
   will-change: transform;
 }
 
@@ -475,7 +479,7 @@ h3 {
 }
 
 @keyframes breathe-scale {
-  from { transform: scale(0.74); }
+  from { transform: scale(var(--orb-min-scale, 0.74)); }
   to { transform: scale(1.42); }
 }
 
@@ -1572,6 +1576,86 @@ h3 {
   color: var(--accent);
 }
 
+.training-preference-panel {
+  display: grid;
+  max-width: 620px;
+  gap: 18px;
+  margin: -4px 0 28px;
+  padding: 18px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+  border-radius: 22px;
+  background: color-mix(in srgb, var(--surface-strong) 86%, var(--accent-soft));
+}
+
+.preference-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.preference-heading span {
+  color: var(--accent-strong);
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.preference-heading strong {
+  color: var(--text-soft);
+  font-size: 13px;
+  font-weight: 680;
+  line-height: 1.4;
+  text-align: right;
+}
+
+.preference-slider {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 220px);
+  align-items: start;
+  gap: 18px;
+}
+
+.preference-slider label,
+.preference-range-stack {
+  display: grid;
+  gap: 4px;
+}
+
+.preference-slider strong {
+  font-size: 14px;
+}
+
+.preference-slider small {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.preference-slider input {
+  width: 100%;
+  cursor: pointer;
+}
+
+.preference-stepper {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.preference-stepper button {
+  min-height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-soft);
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  cursor: pointer;
+}
+
+.preference-stepper button:hover {
+  color: var(--accent-strong);
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+}
+
 .safety-check {
   max-width: 590px;
   margin: 0 0 26px !important;
@@ -2269,6 +2353,26 @@ h3 {
 
   .back-link {
     margin-bottom: 28px;
+  }
+
+  .training-preference-panel {
+    gap: 16px;
+    padding: 16px;
+    border-radius: 18px;
+  }
+
+  .preference-heading {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .preference-heading strong {
+    text-align: left;
+  }
+
+  .preference-slider {
+    grid-template-columns: 1fr;
+    gap: 10px;
   }
 
   .training-fullscreen {
