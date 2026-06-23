@@ -4,10 +4,18 @@
   "main": "./worker/index.ts",
   "compatibility_date": "2026-06-22",
   "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": true,
   "assets": {
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*"]
   },
+  "routes": [
+    {
+      "pattern": "jiong.cc.cd/*",
+      "zone_name": "jiong.cc.cd"
+    }
+  ],
   "d1_databases": [
     {
       "binding": "DB",
