@@ -14,6 +14,10 @@
     {
       "pattern": "jiong.cc.cd/*",
       "zone_name": "jiong.cc.cd"
+    },
+    {
+      "pattern": "xijian.jiong.cc.cd",
+      "custom_domain": true
     }
   ],
   "d1_databases": [
