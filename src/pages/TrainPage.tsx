@@ -8,6 +8,7 @@ import {
   Pause,
   Play,
   ShieldCheck,
+  SpeakerHigh,
   UsersThree,
   WarningCircle,
   X,
@@ -23,6 +24,7 @@ type TrainingPhase = "ready" | "left" | "switch" | "right" | "relax" | "complete
 type TrainingPreference = {
   cycleSeconds: number;
   minScale: number;
+  voiceAssist: boolean;
 };
 
 const phaseDuration: Record<Exclude<TrainingPhase, "ready" | "complete">, number> = {
@@ -35,20 +37,43 @@ const phaseDuration: Record<Exclude<TrainingPhase, "ready" | "complete">, number
 const DEFAULT_TRAINING_PREFERENCE: TrainingPreference = {
   cycleSeconds: 6,
   minScale: 0.74,
+  voiceAssist: false,
 };
 
 const TRAINING_PREFERENCE_KEY = "xijian-training-preference";
+const CYCLE_SECONDS_MIN = 1;
+const CYCLE_SECONDS_MAX = 20;
+const MIN_SCALE_MIN = 0.2;
+const MIN_SCALE_MAX = 1.1;
 
-function clampNumber(value: number, min: number, max: number): number {
-  if (!Number.isFinite(value)) return min;
+function clampNumber(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback;
   return Math.min(max, Math.max(min, value));
 }
 
 function normalizePreference(value: Partial<TrainingPreference>): TrainingPreference {
+  const voiceAssist = typeof value.voiceAssist === "boolean"
+    ? value.voiceAssist
+    : DEFAULT_TRAINING_PREFERENCE.voiceAssist;
   return {
-    cycleSeconds: clampNumber(Number(value.cycleSeconds ?? DEFAULT_TRAINING_PREFERENCE.cycleSeconds), 3, 10),
-    minScale: clampNumber(Number(value.minScale ?? DEFAULT_TRAINING_PREFERENCE.minScale), 0.5, 0.9),
+    cycleSeconds: clampNumber(
+      Number(value.cycleSeconds ?? DEFAULT_TRAINING_PREFERENCE.cycleSeconds),
+      CYCLE_SECONDS_MIN,
+      CYCLE_SECONDS_MAX,
+      DEFAULT_TRAINING_PREFERENCE.cycleSeconds,
+    ),
+    minScale: clampNumber(
+      Number(value.minScale ?? DEFAULT_TRAINING_PREFERENCE.minScale),
+      MIN_SCALE_MIN,
+      MIN_SCALE_MAX,
+      DEFAULT_TRAINING_PREFERENCE.minScale,
+    ),
+    voiceAssist,
   };
+}
+
+function formatCycleLabel(value: number): string {
+  return value.toFixed(2).replace(/\.00$/, "").replace(/0$/, "");
 }
 
 function loadTrainingPreference(): TrainingPreference {
@@ -57,7 +82,7 @@ function loadTrainingPreference(): TrainingPreference {
     if (!stored) return DEFAULT_TRAINING_PREFERENCE;
     const parsed = JSON.parse(stored) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return DEFAULT_TRAINING_PREFERENCE;
-    return normalizePreference(parsed);
+    return normalizePreference(parsed as Partial<TrainingPreference>);
   } catch {
     return DEFAULT_TRAINING_PREFERENCE;
   }
@@ -102,7 +127,13 @@ export function TrainPage() {
   const savedRef = useRef(false);
 
   const isActive = activePhases.includes(phase as Exclude<TrainingPhase, "ready" | "complete">);
-  const cycleLabel = preference.cycleSeconds.toFixed(preference.cycleSeconds % 1 === 0 ? 0 : 1);
+  const currentCopy = isActive
+    ? phaseCopy[phase as Exclude<TrainingPhase, "ready" | "complete">]
+    : null;
+  const activeIndex = isActive
+    ? activePhases.indexOf(phase as Exclude<TrainingPhase, "ready" | "complete">)
+    : 0;
+  const cycleLabel = formatCycleLabel(preference.cycleSeconds);
   const minCirclePercent = Math.round(preference.minScale * 100);
 
   useEffect(() => {
@@ -132,6 +163,20 @@ export function TrainPage() {
     setPreference((current) => normalizePreference({ ...current, minScale: current.minScale + delta }));
   };
 
+  const cancelSpeech = useCallback(() => {
+    if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+  }, []);
+
+  const speakInstruction = useCallback((message: string) => {
+    if (!("speechSynthesis" in window) || !("SpeechSynthesisUtterance" in window)) return;
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(message);
+    utterance.lang = "zh-CN";
+    utterance.rate = 0.92;
+    utterance.pitch = 1;
+    window.speechSynthesis.speak(utterance);
+  }, []);
+
   const requestFullscreen = async () => {
     if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
       try {
@@ -160,7 +205,7 @@ export function TrainPage() {
 
   const start = () => {
     setError("");
-    if (fullscreenSupported) void requestFullscreen();
+    void requestFullscreen();
     setPhase("left");
     setSeconds(durations.left);
     setPaused(false);
@@ -169,6 +214,7 @@ export function TrainPage() {
 
   const reset = () => {
     exitFullscreenQuietly();
+    cancelSpeech();
     setPhase("ready");
     setSeconds(durations.left);
     setPaused(false);
@@ -197,6 +243,14 @@ export function TrainPage() {
     }, 1000);
     return () => window.clearInterval(timer);
   }, [isActive, paused, phase]);
+
+  useEffect(() => {
+    if (!isActive || !preference.voiceAssist || paused || !currentCopy) {
+      if (paused || !preference.voiceAssist || !isActive) cancelSpeech();
+      return;
+    }
+    speakInstruction(`${currentCopy.title}。${currentCopy.instruction}`);
+  }, [cancelSpeech, currentCopy, isActive, paused, phase, preference.voiceAssist, speakInstruction]);
 
   useEffect(() => {
     if (isActive && seconds === 0) advance();
@@ -228,6 +282,7 @@ export function TrainPage() {
   useEffect(() => {
     if (phase !== "complete" || savedRef.current) return;
     exitFullscreenQuietly();
+    cancelSpeech();
     savedRef.current = true;
     const save = async () => {
       setSaving(true);
@@ -251,7 +306,7 @@ export function TrainPage() {
       }
     };
     void save();
-  }, [exitFullscreenQuietly, phase, user]);
+  }, [cancelSpeech, exitFullscreenQuietly, phase, user]);
 
   const publish = async () => {
     if (!result || sharing) return;
@@ -277,16 +332,9 @@ export function TrainPage() {
     }
   };
 
-  const currentCopy = isActive
-    ? phaseCopy[phase as Exclude<TrainingPhase, "ready" | "complete">]
-    : null;
-  const activeIndex = isActive
-    ? activePhases.indexOf(phase as Exclude<TrainingPhase, "ready" | "complete">)
-    : 0;
-
   if (isActive && currentCopy) {
     return (
-      <div className="training-fullscreen">
+      <div className={`training-fullscreen${preference.voiceAssist ? " voice-mode" : ""}`}>
         <header className="training-header">
           <button type="button" className="icon-button" onClick={() => setPaused(true)} aria-label="退出训练">
             <X />
@@ -313,10 +361,18 @@ export function TrainPage() {
         </header>
 
         <div className="training-stage">
-          <div className="training-copy">
-            <span>{currentCopy.title}</span>
-            <h1>{currentCopy.instruction}</h1>
-          </div>
+          {preference.voiceAssist ? (
+            <div className="voice-training-status" aria-live="polite">
+              <SpeakerHigh weight="duotone" />
+              <span>{currentCopy.title}</span>
+              <small>{currentCopy.instruction}</small>
+            </div>
+          ) : (
+            <div className="training-copy">
+              <span>{currentCopy.title}</span>
+              <h1>{currentCopy.instruction}</h1>
+            </div>
+          )}
           <TrainingOrb
             paused={paused || phase === "switch"}
             label={currentCopy.instruction}
@@ -422,21 +478,21 @@ export function TrainPage() {
           <div className="preference-slider">
             <label htmlFor="orb-cycle-seconds">
               <strong>C 形标速度</strong>
-              <small>每次放大缩小的周期，数值越小越快</small>
+              <small>1 到 20 秒一轮，数值越小越快</small>
             </label>
             <div className="preference-range-stack">
               <input
                 id="orb-cycle-seconds"
                 type="range"
-                min="3"
-                max="10"
-                step="0.5"
+                min={CYCLE_SECONDS_MIN}
+                max={CYCLE_SECONDS_MAX}
+                step="0.25"
                 value={preference.cycleSeconds}
                 onChange={(event) => updatePreference({ cycleSeconds: Number(event.target.value) })}
                 aria-valuetext={`${cycleLabel} 秒一轮`}
               />
               <div className="preference-stepper" aria-label="调整 C 形标速度">
-                <button type="button" onClick={() => adjustCycleSeconds(0.5)}>慢一点</button>
+                <button type="button" onClick={() => adjustCycleSeconds(1)}>慢一点</button>
                 <button type="button" onClick={() => adjustCycleSeconds(-0.5)}>快一点</button>
               </div>
             </div>
@@ -444,25 +500,37 @@ export function TrainPage() {
           <div className="preference-slider">
             <label htmlFor="orb-min-scale">
               <strong>最小可见 C 形</strong>
-              <small>调整 C 形标收缩时的大小，敏感时可以调大</small>
+              <small>20% 到 110%，敏感时可以调大</small>
             </label>
             <div className="preference-range-stack">
               <input
                 id="orb-min-scale"
                 type="range"
-                min="0.5"
-                max="0.9"
-                step="0.02"
+                min={MIN_SCALE_MIN}
+                max={MIN_SCALE_MAX}
+                step="0.01"
                 value={preference.minScale}
                 onChange={(event) => updatePreference({ minScale: Number(event.target.value) })}
                 aria-valuetext={`收缩到 ${minCirclePercent}%`}
               />
               <div className="preference-stepper" aria-label="调整最小可见 C 形">
-                <button type="button" onClick={() => adjustMinScale(-0.02)}>小一点</button>
-                <button type="button" onClick={() => adjustMinScale(0.02)}>大一点</button>
+                <button type="button" onClick={() => adjustMinScale(-0.05)}>小一点</button>
+                <button type="button" onClick={() => adjustMinScale(0.05)}>大一点</button>
               </div>
             </div>
           </div>
+          <label className="voice-assist-toggle">
+            <input
+              type="checkbox"
+              checked={preference.voiceAssist}
+              onChange={(event) => updatePreference({ voiceAssist: event.target.checked })}
+            />
+            <span className="voice-assist-icon" aria-hidden="true"><SpeakerHigh weight="duotone" /></span>
+            <span>
+              <strong>语音帮助模式</strong>
+              <small>开始后直接请求全屏，训练画布放大，阶段提示用语音播报。</small>
+            </span>
+          </label>
         </div>
         <label className="checkbox-field safety-check">
           <input type="checkbox" checked={safetyAccepted} onChange={(event) => setSafetyAccepted(event.target.checked)} />
