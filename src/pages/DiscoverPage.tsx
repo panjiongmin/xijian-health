@@ -1,6 +1,7 @@
 import {
   Armchair,
   ArrowRight,
+  ForkKnife,
   Eye,
   MoonStars,
   PersonSimpleTaiChi,
@@ -39,6 +40,12 @@ export function DiscoverPage() {
           <p>久坐间隙里的轻量活动引导。</p>
           <span>即将开放</span>
         </article>
+        <Link className="module-coming nutrition-module" to="/nutrition">
+          <ForkKnife weight="duotone" />
+          <h2>饮食健康</h2>
+          <p>先从识别常见糖油混合物开始，建立更轻的加餐习惯。</p>
+          <span>查看清单 <ArrowRight /></span>
+        </Link>
         <article className="module-coming compact-module">
           <Armchair weight="duotone" />
           <div><h2>久坐提醒</h2><span>即将开放</span></div>

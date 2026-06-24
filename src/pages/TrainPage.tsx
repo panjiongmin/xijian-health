@@ -1,4 +1,6 @@
 import {
+  ArrowsInSimple,
+  ArrowsOutSimple,
   ArrowLeft,
   Check,
   CheckCircle,
@@ -95,6 +97,8 @@ export function TrainPage() {
   const [shared, setShared] = useState(false);
   const [error, setError] = useState("");
   const [preference, setPreference] = useState<TrainingPreference>(() => loadTrainingPreference());
+  const [fullscreenSupported, setFullscreenSupported] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const savedRef = useRef(false);
 
   const isActive = activePhases.includes(phase as Exclude<TrainingPhase, "ready" | "complete">);
@@ -109,6 +113,13 @@ export function TrainPage() {
     }
   }, [preference]);
 
+  useEffect(() => {
+    setFullscreenSupported(Boolean(document.documentElement.requestFullscreen));
+    const onFullscreenChange = () => setIsFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
+  }, []);
+
   const updatePreference = (value: Partial<TrainingPreference>) => {
     setPreference((current) => normalizePreference({ ...current, ...value }));
   };
@@ -121,8 +132,35 @@ export function TrainPage() {
     setPreference((current) => normalizePreference({ ...current, minScale: current.minScale + delta }));
   };
 
+  const requestFullscreen = async () => {
+    if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+      try {
+        await document.documentElement.requestFullscreen();
+      } catch {
+        setError("浏览器没有进入全屏，你可以在训练中手动点击全屏按钮。");
+      }
+    }
+  };
+
+  const toggleFullscreen = async () => {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else if (document.documentElement.requestFullscreen) {
+        await document.documentElement.requestFullscreen();
+      }
+    } catch {
+      setError("当前浏览器暂时无法切换全屏。");
+    }
+  };
+
+  const exitFullscreenQuietly = useCallback(() => {
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+  }, []);
+
   const start = () => {
     setError("");
+    if (fullscreenSupported) void requestFullscreen();
     setPhase("left");
     setSeconds(durations.left);
     setPaused(false);
@@ -130,6 +168,7 @@ export function TrainPage() {
   };
 
   const reset = () => {
+    exitFullscreenQuietly();
     setPhase("ready");
     setSeconds(durations.left);
     setPaused(false);
@@ -188,6 +227,7 @@ export function TrainPage() {
 
   useEffect(() => {
     if (phase !== "complete" || savedRef.current) return;
+    exitFullscreenQuietly();
     savedRef.current = true;
     const save = async () => {
       setSaving(true);
@@ -211,7 +251,7 @@ export function TrainPage() {
       }
     };
     void save();
-  }, [phase, user]);
+  }, [exitFullscreenQuietly, phase, user]);
 
   const publish = async () => {
     if (!result || sharing) return;
@@ -256,7 +296,20 @@ export function TrainPage() {
               <i key={item} className={index <= activeIndex ? "active" : ""} />
             ))}
           </div>
-          <span className="training-time">{Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, "0")}</span>
+          <div className="training-header-actions">
+            {fullscreenSupported && (
+              <button
+                type="button"
+                className="training-fullscreen-button"
+                onClick={() => void toggleFullscreen()}
+                aria-label={isFullscreen ? "退出全屏" : "进入全屏"}
+              >
+                {isFullscreen ? <ArrowsInSimple /> : <ArrowsOutSimple />}
+                <span>{isFullscreen ? "退出全屏" : "全屏"}</span>
+              </button>
+            )}
+            <span className="training-time">{Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, "0")}</span>
+          </div>
         </header>
 
         <div className="training-stage">
@@ -368,7 +421,7 @@ export function TrainPage() {
           </div>
           <div className="preference-slider">
             <label htmlFor="orb-cycle-seconds">
-              <strong>圆圈速度</strong>
+              <strong>C 形标速度</strong>
               <small>每次放大缩小的周期，数值越小越快</small>
             </label>
             <div className="preference-range-stack">
@@ -382,7 +435,7 @@ export function TrainPage() {
                 onChange={(event) => updatePreference({ cycleSeconds: Number(event.target.value) })}
                 aria-valuetext={`${cycleLabel} 秒一轮`}
               />
-              <div className="preference-stepper" aria-label="调整圆圈速度">
+              <div className="preference-stepper" aria-label="调整 C 形标速度">
                 <button type="button" onClick={() => adjustCycleSeconds(0.5)}>慢一点</button>
                 <button type="button" onClick={() => adjustCycleSeconds(-0.5)}>快一点</button>
               </div>
@@ -390,8 +443,8 @@ export function TrainPage() {
           </div>
           <div className="preference-slider">
             <label htmlFor="orb-min-scale">
-              <strong>最小可见圆圈</strong>
-              <small>调整圆圈收缩时的大小，敏感时可以调大</small>
+              <strong>最小可见 C 形</strong>
+              <small>调整 C 形标收缩时的大小，敏感时可以调大</small>
             </label>
             <div className="preference-range-stack">
               <input
@@ -404,7 +457,7 @@ export function TrainPage() {
                 onChange={(event) => updatePreference({ minScale: Number(event.target.value) })}
                 aria-valuetext={`收缩到 ${minCirclePercent}%`}
               />
-              <div className="preference-stepper" aria-label="调整最小可见圆圈">
+              <div className="preference-stepper" aria-label="调整最小可见 C 形">
                 <button type="button" onClick={() => adjustMinScale(-0.02)}>小一点</button>
                 <button type="button" onClick={() => adjustMinScale(0.02)}>大一点</button>
               </div>

@@ -27,7 +27,8 @@ export function TrainingOrb({
     <div className={`training-orb-wrap${compact ? " compact" : ""}`}>
       <div className="orb-stage" aria-label={label}>
         <div className={`training-orb${paused ? " paused" : ""}`} style={orbStyle}>
-          <span className="focus-point" />
+          <span className="landolt-c" aria-hidden="true" />
+          <span className="focus-point" aria-hidden="true" />
         </div>
       </div>
       <div className="orb-caption">
