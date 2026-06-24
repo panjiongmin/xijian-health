@@ -18,6 +18,7 @@ type Theme = "light" | "dark";
 const mainLinks = [
   { to: "/", label: "首页", icon: House },
   { to: "/train", label: "训练", icon: PlayCircle },
+  { to: "/discover", label: "发现", icon: Compass },
   { to: "/community", label: "社区", icon: UsersThree },
   { to: "/records", label: "记录", icon: CalendarDots },
 ];
@@ -54,7 +55,6 @@ export function AppLayout() {
                 {label}
               </NavLink>
             ))}
-            <NavLink to="/discover">发现</NavLink>
           </nav>
 
           <div className="header-actions">
@@ -103,7 +103,7 @@ export function AppLayout() {
           </NavLink>
         ))}
         <NavLink to="/me">
-          {user ? <UserCircle /> : <Compass />}
+          <UserCircle />
           <span>我的</span>
         </NavLink>
       </nav>
