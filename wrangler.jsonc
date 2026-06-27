@@ -10,6 +10,11 @@
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*"]
   },
+  "vars": {
+    "XFYUN_TTS_URL": "wss://cbm01.cn-huabei-1.xf-yun.com/v1/private/mcd9m97e6",
+    "XFYUN_TTS_VOICE": "x5_lingfeiyi_flow",
+    "XFYUN_TTS_ORAL_LEVEL": "mid"
+  },
   "routes": [
     {
       "pattern": "jiong.cc.cd/*",

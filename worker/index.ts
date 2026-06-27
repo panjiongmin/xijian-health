@@ -1,9 +1,16 @@
 import { timingSafeEqual } from "node:crypto";
 
 const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 const PASSWORD_ITERATIONS = 10_000;
 const MIN_PASSWORD_ITERATIONS = 5_000;
 const SESSION_DAYS = 30;
+const XFYUN_TTS_DEFAULT_URL = "wss://cbm01.cn-huabei-1.xf-yun.com/v1/private/mcd9m97e6";
+const XFYUN_TTS_DEFAULT_VOICE = "x5_lingfeiyi_flow";
+const XFYUN_TTS_DEFAULT_ORAL_LEVEL = "mid";
+const XFYUN_TTS_TIMEOUT_MS = 15_000;
+const XFYUN_TTS_MAX_AUDIO_BYTES = 1_200_000;
+const XFYUN_TTS_CACHE_SECONDS = 60 * 60 * 24 * 30;
 
 type JsonObject = Record<string, unknown>;
 
@@ -62,11 +69,62 @@ type Summary = {
   recentDates: string[];
 };
 
+type TrainingSpeechPhase = "left" | "switch" | "right" | "relax";
+
+type XfyunTtsBindings = {
+  XFYUN_TTS_APP_ID?: string;
+  XFYUN_TTS_API_PASSWORD?: string;
+  XFYUN_TTS_API_KEY?: string;
+  XFYUN_TTS_API_SECRET?: string;
+  XFYUN_TTS_URL?: string;
+  XFYUN_TTS_VOICE?: string;
+  XFYUN_TTS_ORAL_LEVEL?: string;
+};
+
+type XfyunTtsConfig = {
+  appId: string;
+  apiPassword: string;
+  apiKey: string;
+  apiSecret: string;
+  endpoint: string;
+  voice: string;
+  oralLevel: string;
+};
+
+type XfyunTtsResponse = {
+  header?: {
+    code?: number;
+    message?: string;
+    sid?: string;
+    status?: number;
+  };
+  payload?: {
+    audio?: {
+      audio?: string;
+      status?: number;
+    };
+  };
+};
+
+const trainingSpeechCopy: Record<TrainingSpeechPhase, string> = {
+  left: "左眼专注。轻遮右眼，注视中心的小点。",
+  switch: "准备换眼。放下双手，眨眨眼睛。",
+  right: "右眼专注。轻遮左眼，继续跟随节奏。",
+  relax: "双眼放松。自然睁开双眼，然后望向远处实物。",
+};
+
 const apiHeaders = {
   "Cache-Control": "no-store",
   "Content-Type": "application/json; charset=utf-8",
   "X-Content-Type-Options": "nosniff",
   "X-Frame-Options": "DENY",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+};
+
+const audioHeaders = {
+  "Cache-Control": `public, max-age=${XFYUN_TTS_CACHE_SECONDS}`,
+  "Content-Type": "audio/mpeg",
+  "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "strict-origin-when-cross-origin",
 };
 
@@ -116,6 +174,42 @@ function bytesToHex(value: ArrayBuffer | ArrayBufferView): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+function bytesToBase64(value: ArrayBuffer | ArrayBufferView): string {
+  const bytes = value instanceof ArrayBuffer
+    ? new Uint8Array(value)
+    : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 8192) {
+    const chunk = bytes.subarray(index, index + 8192);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(value: string): Uint8Array<ArrayBuffer> {
+  const binary = atob(value);
+  const bytes = new Uint8Array(new ArrayBuffer(binary.length));
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+function concatBytes(parts: Uint8Array<ArrayBuffer>[]): Uint8Array<ArrayBuffer> {
+  const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
+  const result = new Uint8Array(new ArrayBuffer(total));
+  let offset = 0;
+  for (const part of parts) {
+    result.set(part, offset);
+    offset += part.byteLength;
+  }
+  return result;
+}
+
+function stringToBase64(value: string): string {
+  return bytesToBase64(encoder.encode(value));
+}
+
 function hexToBytes(value: string): Uint8Array<ArrayBuffer> {
   if (value.length % 2 !== 0) return new Uint8Array(new ArrayBuffer(0));
   const result = new Uint8Array(new ArrayBuffer(value.length / 2));
@@ -129,6 +223,17 @@ function hexToBytes(value: string): Uint8Array<ArrayBuffer> {
 
 async function sha256Hex(value: string): Promise<string> {
   return bytesToHex(await crypto.subtle.digest("SHA-256", encoder.encode(value)));
+}
+
+async function hmacSha256Base64(secret: string, value: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  return bytesToBase64(await crypto.subtle.sign("HMAC", key, encoder.encode(value)));
 }
 
 async function hashPassword(password: string): Promise<string> {
@@ -319,6 +424,231 @@ function avatarFromId(id: string): string {
   const choices = ["moss", "sage", "fern", "pond", "stone"];
   const first = id.codePointAt(0) ?? 0;
   return choices[first % choices.length] ?? "moss";
+}
+
+function trimBinding(value: string | undefined): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function getXfyunTtsConfig(env: Env): XfyunTtsConfig | null {
+  const bindings = env as Env & XfyunTtsBindings;
+  const appId = trimBinding(bindings.XFYUN_TTS_APP_ID);
+  const apiPassword = trimBinding(bindings.XFYUN_TTS_API_PASSWORD);
+  const apiKey = trimBinding(bindings.XFYUN_TTS_API_KEY);
+  const apiSecret = trimBinding(bindings.XFYUN_TTS_API_SECRET);
+  if (!appId || (!apiPassword && (!apiKey || !apiSecret))) return null;
+
+  return {
+    appId,
+    apiPassword,
+    apiKey,
+    apiSecret,
+    endpoint: trimBinding(bindings.XFYUN_TTS_URL) || XFYUN_TTS_DEFAULT_URL,
+    voice: trimBinding(bindings.XFYUN_TTS_VOICE) || XFYUN_TTS_DEFAULT_VOICE,
+    oralLevel: trimBinding(bindings.XFYUN_TTS_ORAL_LEVEL) || XFYUN_TTS_DEFAULT_ORAL_LEVEL,
+  };
+}
+
+function buildXfyunTtsPayload(config: XfyunTtsConfig, text: string): JsonObject {
+  return {
+    header: {
+      app_id: config.appId,
+      status: 2,
+    },
+    parameter: {
+      oral: {
+        oral_level: config.oralLevel,
+      },
+      tts: {
+        vcn: config.voice,
+        speed: 48,
+        volume: 68,
+        pitch: 50,
+        bgs: 0,
+        reg: 0,
+        rdn: 0,
+        rhy: 0,
+        audio: {
+          encoding: "lame",
+          sample_rate: 24000,
+          channels: 1,
+          bit_depth: 16,
+          frame_size: 0,
+        },
+      },
+    },
+    payload: {
+      text: {
+        encoding: "utf8",
+        compress: "raw",
+        format: "plain",
+        status: 2,
+        seq: 0,
+        text: stringToBase64(text),
+      },
+    },
+  };
+}
+
+async function signXfyunWebSocketUrl(endpoint: string, apiKey: string, apiSecret: string): Promise<string> {
+  const url = new URL(endpoint);
+  const date = new Date().toUTCString();
+  const signatureOrigin = `host: ${url.host}\ndate: ${date}\nGET ${url.pathname} HTTP/1.1`;
+  const signature = await hmacSha256Base64(apiSecret, signatureOrigin);
+  const authorizationOrigin = `api_key="${apiKey}", algorithm="hmac-sha256", headers="host date request-line", signature="${signature}"`;
+  url.searchParams.set("host", url.host);
+  url.searchParams.set("date", date);
+  url.searchParams.set("authorization", stringToBase64(authorizationOrigin));
+  return url.toString();
+}
+
+async function connectXfyunWebSocket(config: XfyunTtsConfig): Promise<WebSocket> {
+  const endpoint = config.apiPassword
+    ? config.endpoint
+    : await signXfyunWebSocketUrl(config.endpoint, config.apiKey, config.apiSecret);
+  const headers = new Headers({ Upgrade: "websocket" });
+  if (config.apiPassword) headers.set("x-api-key", config.apiPassword);
+
+  const response = await fetch(endpoint, { method: "GET", headers });
+  const webSocket = response.webSocket;
+  if (response.status !== 101 || !webSocket) {
+    throw new Error(`xunfei websocket failed with status ${response.status}`);
+  }
+  webSocket.accept();
+  return webSocket;
+}
+
+function parseXfyunMessage(data: string | ArrayBuffer): XfyunTtsResponse {
+  const text = typeof data === "string" ? data : decoder.decode(data);
+  const parsed = JSON.parse(text) as unknown;
+  return asObject(parsed) as XfyunTtsResponse;
+}
+
+async function synthesizeWithXfyun(config: XfyunTtsConfig, text: string): Promise<Uint8Array<ArrayBuffer>> {
+  const webSocket = await connectXfyunWebSocket(config);
+  return new Promise((resolve, reject) => {
+    const chunks: Uint8Array<ArrayBuffer>[] = [];
+    let settled = false;
+
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      webSocket.removeEventListener("message", onMessage);
+      webSocket.removeEventListener("close", onClose);
+      webSocket.removeEventListener("error", onError);
+      callback();
+    };
+
+    const fail = (cause: unknown) => {
+      finish(() => {
+        try {
+          webSocket.close(1011, "tts failed");
+        } catch {
+          // Closing is best-effort after an upstream error.
+        }
+        reject(cause instanceof Error ? cause : new Error(String(cause)));
+      });
+    };
+
+    const timer = setTimeout(() => fail(new Error("xunfei tts timeout")), XFYUN_TTS_TIMEOUT_MS);
+
+    const onMessage = (event: MessageEvent<string | ArrayBuffer>) => {
+      try {
+        const message = parseXfyunMessage(event.data);
+        const code = Number(message.header?.code ?? 0);
+        if (code !== 0) {
+          fail(new Error(message.header?.message || `xunfei tts error ${code}`));
+          return;
+        }
+
+        const audio = message.payload?.audio?.audio;
+        if (audio) {
+          chunks.push(base64ToBytes(audio));
+          const size = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+          if (size > XFYUN_TTS_MAX_AUDIO_BYTES) {
+            fail(new Error("xunfei tts response too large"));
+            return;
+          }
+        }
+
+        const status = Number(message.payload?.audio?.status ?? message.header?.status ?? 0);
+        if (status === 2) {
+          finish(() => {
+            try {
+              webSocket.close(1000, "tts complete");
+            } catch {
+              // Closing is best-effort after a successful response.
+            }
+            resolve(concatBytes(chunks));
+          });
+        }
+      } catch (cause) {
+        fail(cause);
+      }
+    };
+
+    const onClose = () => fail(new Error("xunfei websocket closed before completion"));
+    const onError = () => fail(new Error("xunfei websocket error"));
+
+    webSocket.addEventListener("message", onMessage);
+    webSocket.addEventListener("close", onClose);
+    webSocket.addEventListener("error", onError);
+    webSocket.send(JSON.stringify(buildXfyunTtsPayload(config, text)));
+  });
+}
+
+async function ttsCacheKey(config: XfyunTtsConfig, phase: TrainingSpeechPhase, text: string): Promise<string> {
+  const digest = await sha256Hex(JSON.stringify({
+    provider: "xfyun-super-tts",
+    version: 1,
+    phase,
+    text,
+    voice: config.voice,
+    oralLevel: config.oralLevel,
+    sampleRate: 24000,
+    encoding: "lame",
+  }));
+  return `tts/xfyun-super/${digest}.mp3`;
+}
+
+async function handleTrainingSpeech(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const phase = url.searchParams.get("phase");
+  if (phase !== "left" && phase !== "switch" && phase !== "right" && phase !== "relax") {
+    return error("语音阶段无效。", 400);
+  }
+
+  const config = getXfyunTtsConfig(env);
+  if (!config) {
+    return error("讯飞语音暂未配置。", 503);
+  }
+
+  const text = trainingSpeechCopy[phase];
+  const key = await ttsCacheKey(config, phase, text);
+  const cached = await env.ASSETS_BUCKET.get(key);
+  if (cached?.body) {
+    return new Response(cached.body, {
+      headers: { ...audioHeaders, "X-TTS-Cache": "HIT" },
+    });
+  }
+
+  const audio = await synthesizeWithXfyun(config, text);
+  await env.ASSETS_BUCKET.put(key, audio, {
+    httpMetadata: {
+      contentType: "audio/mpeg",
+      cacheControl: audioHeaders["Cache-Control"],
+    },
+    customMetadata: {
+      provider: "xfyun-super-tts",
+      phase,
+      voice: config.voice,
+    },
+  });
+
+  return new Response(audio, {
+    headers: { ...audioHeaders, "X-TTS-Cache": "MISS" },
+  });
 }
 
 async function handleRegister(request: Request, env: Env): Promise<Response> {
@@ -671,6 +1001,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   }
 
   if (method === "GET" && path === "/api/health") return json({ status: "ok" });
+  if (method === "GET" && path === "/api/tts/training") return handleTrainingSpeech(request, env);
   if (method === "POST" && path === "/api/auth/register") return handleRegister(request, env);
   if (method === "POST" && path === "/api/auth/login") return handleLogin(request, env);
   if (method === "POST" && path === "/api/auth/logout") return handleLogout(request, env);

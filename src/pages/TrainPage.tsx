@@ -125,6 +125,9 @@ export function TrainPage() {
   const [fullscreenSupported, setFullscreenSupported] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const savedRef = useRef(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioUrlRef = useRef<string | null>(null);
+  const speechRequestRef = useRef(0);
 
   const isActive = activePhases.includes(phase as Exclude<TrainingPhase, "ready" | "complete">);
   const currentCopy = isActive
@@ -164,10 +167,21 @@ export function TrainPage() {
   };
 
   const cancelSpeech = useCallback(() => {
+    speechRequestRef.current += 1;
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.removeAttribute("src");
+      audioRef.current.load();
+      audioRef.current = null;
+    }
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current);
+      audioUrlRef.current = null;
+    }
     if ("speechSynthesis" in window) window.speechSynthesis.cancel();
   }, []);
 
-  const speakInstruction = useCallback((message: string) => {
+  const speakBrowserInstruction = useCallback((message: string) => {
     if (!("speechSynthesis" in window) || !("SpeechSynthesisUtterance" in window)) return;
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(message);
@@ -176,6 +190,57 @@ export function TrainPage() {
     utterance.pitch = 1;
     window.speechSynthesis.speak(utterance);
   }, []);
+
+  const speakInstruction = useCallback(async (trainingPhase: Exclude<TrainingPhase, "ready" | "complete">, message: string) => {
+    cancelSpeech();
+    const requestId = speechRequestRef.current;
+    try {
+      const response = await fetch(`/api/tts/training?phase=${encodeURIComponent(trainingPhase)}`, {
+        credentials: "include",
+        headers: { Accept: "audio/mpeg" },
+      });
+      if (!response.ok) throw new Error("tts unavailable");
+      const audioBlob = await response.blob();
+      if (speechRequestRef.current !== requestId) return;
+
+      const audioUrl = URL.createObjectURL(audioBlob);
+      audioUrlRef.current = audioUrl;
+      const audio = new Audio(audioUrl);
+      audioRef.current = audio;
+      audio.onended = () => {
+        if (audioRef.current === audio) audioRef.current = null;
+        if (audioUrlRef.current === audioUrl) {
+          URL.revokeObjectURL(audioUrl);
+          audioUrlRef.current = null;
+        }
+      };
+      audio.onerror = () => {
+        if (speechRequestRef.current === requestId) {
+          if (audioRef.current === audio) audioRef.current = null;
+          if (audioUrlRef.current === audioUrl) {
+            URL.revokeObjectURL(audioUrl);
+            audioUrlRef.current = null;
+          }
+          speakBrowserInstruction(message);
+        }
+      };
+      await audio.play();
+    } catch {
+      if (speechRequestRef.current === requestId) {
+        if (audioRef.current) {
+          audioRef.current.pause();
+          audioRef.current.removeAttribute("src");
+          audioRef.current.load();
+          audioRef.current = null;
+        }
+        if (audioUrlRef.current) {
+          URL.revokeObjectURL(audioUrlRef.current);
+          audioUrlRef.current = null;
+        }
+        speakBrowserInstruction(message);
+      }
+    }
+  }, [cancelSpeech, speakBrowserInstruction]);
 
   const requestFullscreen = async () => {
     if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
@@ -249,7 +314,7 @@ export function TrainPage() {
       if (paused || !preference.voiceAssist || !isActive) cancelSpeech();
       return;
     }
-    speakInstruction(`${currentCopy.title}。${currentCopy.instruction}`);
+    void speakInstruction(phase as Exclude<TrainingPhase, "ready" | "complete">, `${currentCopy.title}。${currentCopy.instruction}`);
   }, [cancelSpeech, currentCopy, isActive, paused, phase, preference.voiceAssist, speakInstruction]);
 
   useEffect(() => {
@@ -521,7 +586,7 @@ export function TrainPage() {
             <span className="voice-assist-icon" aria-hidden="true"><SpeakerHigh weight="duotone" /></span>
             <span>
               <strong>语音帮助模式</strong>
-              <small>开始后直接请求全屏，训练画布放大，阶段提示用语音播报。</small>
+              <small>开始后直接请求全屏，优先使用讯飞超拟人语音播报阶段提示。</small>
             </span>
           </label>
         </div>
