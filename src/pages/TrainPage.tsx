@@ -334,7 +334,7 @@ export function TrainPage() {
 
   if (isActive && currentCopy) {
     return (
-      <div className={`training-fullscreen${preference.voiceAssist ? " voice-mode" : ""}`}>
+      <div className={`training-fullscreen immersive${preference.voiceAssist ? " voice-mode" : ""}`}>
         <header className="training-header">
           <button type="button" className="icon-button" onClick={() => setPaused(true)} aria-label="退出训练">
             <X />
@@ -361,18 +361,11 @@ export function TrainPage() {
         </header>
 
         <div className="training-stage">
-          {preference.voiceAssist ? (
-            <div className="voice-training-status" aria-live="polite">
-              <SpeakerHigh weight="duotone" />
-              <span>{currentCopy.title}</span>
-              <small>{currentCopy.instruction}</small>
-            </div>
-          ) : (
-            <div className="training-copy">
-              <span>{currentCopy.title}</span>
-              <h1>{currentCopy.instruction}</h1>
-            </div>
-          )}
+          <div className="voice-training-status training-hud" aria-live="polite">
+            {preference.voiceAssist && <SpeakerHigh weight="duotone" />}
+            <span>{currentCopy.title}</span>
+            <small>{currentCopy.instruction}</small>
+          </div>
           <TrainingOrb
             paused={paused || phase === "switch"}
             label={currentCopy.instruction}

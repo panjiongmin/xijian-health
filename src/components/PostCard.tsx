@@ -2,12 +2,16 @@ import {
   ChatCircle,
   DotsThree,
   HandsClapping,
+  PaperPlaneTilt,
+  Trash,
+  X,
 } from "@phosphor-icons/react";
-import { useState } from "react";
+import type { FormEvent } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { apiRequest } from "../api";
+import { ApiError, apiRequest } from "../api";
 import { useAuth } from "../auth-context";
-import type { CommunityPost } from "../types";
+import type { CommunityComment, CommunityPost } from "../types";
 
 type PostCardProps = {
   post: CommunityPost;
@@ -27,6 +31,22 @@ export function PostCard({ post, onEncouragementChange }: PostCardProps) {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [working, setWorking] = useState(false);
+  const [commentsOpen, setCommentsOpen] = useState(false);
+  const [commentsLoaded, setCommentsLoaded] = useState(false);
+  const [commentsLoading, setCommentsLoading] = useState(false);
+  const [commentsError, setCommentsError] = useState("");
+  const [comments, setComments] = useState<CommunityComment[]>([]);
+  const [commentText, setCommentText] = useState("");
+  const [commentCount, setCommentCount] = useState(post.commentCount);
+  const [commentSubmitting, setCommentSubmitting] = useState(false);
+
+  useEffect(() => {
+    setCommentCount(post.commentCount);
+    setComments([]);
+    setCommentsLoaded(false);
+    setCommentsError("");
+    setCommentText("");
+  }, [post.id, post.commentCount]);
 
   const toggleEncouragement = async () => {
     if (!user) {
@@ -43,6 +63,68 @@ export function PostCard({ post, onEncouragementChange }: PostCardProps) {
       onEncouragementChange?.(post.id, result.encouraged, result.count);
     } finally {
       setWorking(false);
+    }
+  };
+
+  const loadComments = async () => {
+    setCommentsLoading(true);
+    setCommentsError("");
+    try {
+      const result = await apiRequest<{ comments: CommunityComment[] }>(
+        `/api/community/posts/${post.id}/comments?limit=50`,
+      );
+      setComments(result.comments);
+      setCommentsLoaded(true);
+    } catch (cause) {
+      setCommentsError(cause instanceof ApiError ? cause.message : "评论暂时没有加载成功。");
+    } finally {
+      setCommentsLoading(false);
+    }
+  };
+
+  const openComments = () => {
+    setCommentsOpen(true);
+    if (!commentsLoaded && !commentsLoading) void loadComments();
+  };
+
+  const submitComment = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!user) {
+      navigate("/login?next=/community");
+      return;
+    }
+    const content = commentText.trim();
+    if (!content || commentSubmitting) return;
+    setCommentSubmitting(true);
+    setCommentsError("");
+    try {
+      const result = await apiRequest<{ comment: CommunityComment | null }>(
+        `/api/community/posts/${post.id}/comments`,
+        {
+          method: "POST",
+          body: JSON.stringify({ content }),
+        },
+      );
+      if (result.comment) {
+        setComments((items) => [...items, result.comment as CommunityComment]);
+        setCommentCount((value) => value + 1);
+        setCommentsLoaded(true);
+      }
+      setCommentText("");
+    } catch (cause) {
+      setCommentsError(cause instanceof ApiError ? cause.message : "评论没有发布成功。");
+    } finally {
+      setCommentSubmitting(false);
+    }
+  };
+
+  const deleteComment = async (commentId: string) => {
+    try {
+      await apiRequest<void>(`/api/community/comments/${commentId}`, { method: "DELETE" });
+      setComments((items) => items.filter((comment) => comment.id !== commentId));
+      setCommentCount((value) => Math.max(0, value - 1));
+    } catch (cause) {
+      setCommentsError(cause instanceof ApiError ? cause.message : "评论没有删除成功。");
     }
   };
 
@@ -96,11 +178,92 @@ export function PostCard({ post, onEncouragementChange }: PostCardProps) {
           <HandsClapping weight={post.encouragedByMe ? "fill" : "regular"} />
           <span>鼓励 {post.encouragementCount || ""}</span>
         </button>
-        <button type="button">
+        <button type="button" onClick={openComments}>
           <ChatCircle />
-          <span>评论 {post.commentCount || ""}</span>
+          <span>评论 {commentCount || ""}</span>
         </button>
       </footer>
+
+      {commentsOpen && (
+        <div className="comment-drawer-backdrop" onClick={() => setCommentsOpen(false)}>
+          <section
+            className="comment-drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={`comments-title-${post.id}`}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="comment-drawer-header">
+              <div>
+                <span>动态评论</span>
+                <h2 id={`comments-title-${post.id}`}>{post.nickname} 的松眸记录</h2>
+              </div>
+              <button type="button" className="icon-button quiet" onClick={() => setCommentsOpen(false)} aria-label="关闭评论">
+                <X />
+              </button>
+            </header>
+
+            <div className="comment-source">
+              <span>完成了松眸训练</span>
+              {post.note && <p>{post.note}</p>}
+            </div>
+
+            <div className="comment-list" aria-live="polite">
+              {commentsLoading ? (
+                <div className="comment-loading">正在加载评论</div>
+              ) : commentsError && comments.length === 0 ? (
+                <div className="comment-empty">
+                  <p>{commentsError}</p>
+                  <button type="button" onClick={() => void loadComments()}>重新加载</button>
+                </div>
+              ) : comments.length === 0 ? (
+                <div className="comment-empty">
+                  <p>还没有评论，留下第一句轻轻的鼓励。</p>
+                </div>
+              ) : (
+                comments.map((comment) => (
+                  <article key={comment.id} className="comment-item">
+                    <div className={`avatar avatar-${comment.avatarCode}`} aria-hidden="true">
+                      {comment.nickname.slice(0, 1)}
+                    </div>
+                    <div>
+                      <header>
+                        <strong>{comment.nickname}</strong>
+                        <span>{relativeTime(comment.createdAt)}</span>
+                      </header>
+                      <p>{comment.content}</p>
+                    </div>
+                    {comment.canDelete && (
+                      <button type="button" onClick={() => void deleteComment(comment.id)} aria-label="删除评论">
+                        <Trash />
+                      </button>
+                    )}
+                  </article>
+                ))
+              )}
+            </div>
+
+            {commentsError && comments.length > 0 && <p className="comment-inline-error">{commentsError}</p>}
+
+            <form className="comment-form" onSubmit={(event) => void submitComment(event)}>
+              <textarea
+                value={commentText}
+                onChange={(event) => setCommentText(event.target.value)}
+                placeholder={user ? "写一句温和的回应" : "登录后可以评论"}
+                maxLength={240}
+                disabled={!user || commentSubmitting}
+              />
+              <div>
+                <span>{commentText.trim().length}/240</span>
+                <button type="submit" disabled={!user || commentSubmitting || commentText.trim().length === 0}>
+                  <PaperPlaneTilt weight="fill" />
+                  发送
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
     </article>
   );
 }

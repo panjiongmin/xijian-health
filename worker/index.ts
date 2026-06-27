@@ -43,6 +43,17 @@ type CommunityPostRow = {
   createdAt: string;
 };
 
+type CommunityCommentRow = {
+  id: string;
+  postId: string;
+  userId: string;
+  nickname: string;
+  avatarCode: string;
+  content: string;
+  canDelete: number;
+  createdAt: string;
+};
+
 type Summary = {
   completedToday: boolean;
   weekCount: number;
@@ -88,6 +99,14 @@ async function readBody(request: Request): Promise<JsonObject | null> {
 function readString(body: JsonObject, key: string): string {
   const value = body[key];
   return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeCommentContent(value: string): string {
+  return value
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function bytesToHex(value: ArrayBuffer | ArrayBufferView): string {
@@ -560,6 +579,83 @@ async function handleEncouragement(postId: string, env: Env, user: SessionUserRo
   return json({ encouraged: !existing, count: Number(count?.total ?? 0) });
 }
 
+async function handleComments(postId: string, request: Request, env: Env, user: SessionUserRow | null): Promise<Response> {
+  const url = new URL(request.url);
+  const requestedLimit = Number(url.searchParams.get("limit") ?? "30");
+  const limit = Number.isInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 50) : 30;
+  const post = await env.DB.prepare(
+    "SELECT id FROM community_posts WHERE id = ?1 AND visibility = 'public' AND moderation_status = 'approved' LIMIT 1",
+  ).bind(postId).first();
+  if (!post) return error("没有找到这条动态。", 404);
+
+  const rows = await env.DB.prepare(
+    `SELECT
+      c.id,
+      c.post_id AS postId,
+      c.user_id AS userId,
+      cp.nickname,
+      cp.avatar_code AS avatarCode,
+      c.content,
+      CASE WHEN c.user_id = ?1 THEN 1 ELSE 0 END AS canDelete,
+      c.created_at AS createdAt
+    FROM community_comments c
+    JOIN community_profiles cp ON cp.user_id = c.user_id
+    WHERE c.post_id = ?2 AND c.moderation_status = 'approved'
+    ORDER BY c.created_at ASC, c.id ASC
+    LIMIT ?3`,
+  ).bind(user?.id ?? "", postId, limit).all<CommunityCommentRow>();
+  return json({
+    comments: rows.results.map((row) => ({ ...row, canDelete: Boolean(row.canDelete) })),
+  });
+}
+
+async function handleCreateComment(postId: string, request: Request, env: Env, user: SessionUserRow): Promise<Response> {
+  const body = await readBody(request);
+  if (!body) return error("请求内容无效。", 400);
+  const content = normalizeCommentContent(readString(body, "content"));
+  if (content.length < 1) return error("评论内容不能为空。", 400);
+  if (content.length > 240) return error("评论最多填写 240 个字符。", 400);
+
+  const post = await env.DB.prepare(
+    "SELECT id FROM community_posts WHERE id = ?1 AND visibility = 'public' AND moderation_status = 'approved' LIMIT 1",
+  ).bind(postId).first();
+  if (!post) return error("没有找到这条动态。", 404);
+
+  const id = crypto.randomUUID();
+  await env.DB.prepare(
+    "INSERT INTO community_comments (id, post_id, user_id, content) VALUES (?1, ?2, ?3, ?4)",
+  ).bind(id, postId, user.id, content).run();
+
+  const comment = await env.DB.prepare(
+    `SELECT
+      c.id,
+      c.post_id AS postId,
+      c.user_id AS userId,
+      cp.nickname,
+      cp.avatar_code AS avatarCode,
+      c.content,
+      1 AS canDelete,
+      c.created_at AS createdAt
+    FROM community_comments c
+    JOIN community_profiles cp ON cp.user_id = c.user_id
+    WHERE c.id = ?1
+    LIMIT 1`,
+  ).bind(id).first<CommunityCommentRow>();
+  return json({ comment: comment ? { ...comment, canDelete: true } : null }, 201);
+}
+
+async function handleDeleteComment(commentId: string, env: Env, user: SessionUserRow): Promise<Response> {
+  const existing = await env.DB.prepare(
+    "SELECT id FROM community_comments WHERE id = ?1 AND user_id = ?2 AND moderation_status = 'approved' LIMIT 1",
+  ).bind(commentId, user.id).first<{ id: string }>();
+  if (!existing) return error("没有找到可删除的评论。", 404);
+
+  await env.DB.prepare(
+    "UPDATE community_comments SET moderation_status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND user_id = ?2",
+  ).bind(commentId, user.id).run();
+  return new Response(null, { status: 204, headers: apiHeaders });
+}
+
 function validMutationOrigin(request: Request): boolean {
   const origin = request.headers.get("Origin");
   return !origin || origin === new URL(request.url).origin;
@@ -584,10 +680,24 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (method === "GET" && path === "/api/home") return json(await getSummary(env, user));
   if (method === "GET" && path === "/api/community/feed") return handleFeed(request, env, user);
 
+  const commentsMatch = path.match(/^\/api\/community\/posts\/([a-zA-Z0-9-]+)\/comments$/);
+  if (method === "GET" && commentsMatch?.[1]) {
+    return handleComments(commentsMatch[1], request, env, user);
+  }
+
   if (!user) return error("请先登录。", 401);
   if (method === "POST" && path === "/api/training/complete") return handleTrainingComplete(request, env, user);
   if (method === "GET" && path === "/api/checkins") return handleCheckins(env, user);
   if (method === "POST" && path === "/api/community/posts") return handlePublish(request, env, user);
+
+  if (method === "POST" && commentsMatch?.[1]) {
+    return handleCreateComment(commentsMatch[1], request, env, user);
+  }
+
+  const deleteCommentMatch = path.match(/^\/api\/community\/comments\/([a-zA-Z0-9-]+)$/);
+  if (method === "DELETE" && deleteCommentMatch?.[1]) {
+    return handleDeleteComment(deleteCommentMatch[1], env, user);
+  }
 
   const encouragementMatch = path.match(/^\/api\/community\/posts\/([a-zA-Z0-9-]+)\/encouragement$/);
   if (method === "POST" && encouragementMatch?.[1]) {

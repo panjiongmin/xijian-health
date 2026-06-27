@@ -32,6 +32,17 @@ export type CommunityPost = {
   createdAt: string;
 };
 
+export type CommunityComment = {
+  id: string;
+  postId: string;
+  userId: string;
+  nickname: string;
+  avatarCode: string;
+  content: string;
+  canDelete: boolean;
+  createdAt: string;
+};
+
 export type Checkin = {
   id: string;
   localDate: string;
