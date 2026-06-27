@@ -1,10 +1,37 @@
-import { Gear, LockKey, SignOut, UserCircle } from "@phosphor-icons/react";
+import { Camera, Gear, LockKey, SignOut, UserCircle } from "@phosphor-icons/react";
+import { useState, type ChangeEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { apiRequest } from "../api";
 import { useAuth } from "../auth-context";
+import type { UploadedAsset } from "../types";
 
 export function MePage() {
-  const { user, loading, logout } = useAuth();
+  const { user, loading, logout, refresh } = useAuth();
   const navigate = useNavigate();
+  const [avatarUploading, setAvatarUploading] = useState(false);
+  const [avatarError, setAvatarError] = useState("");
+
+  const uploadAvatar = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || avatarUploading) return;
+    setAvatarUploading(true);
+    setAvatarError("");
+    try {
+      const form = new FormData();
+      form.append("kind", "avatar");
+      form.append("file", file);
+      await apiRequest<{ asset: UploadedAsset }>("/api/assets/upload", {
+        method: "POST",
+        body: form,
+      });
+      await refresh();
+    } catch {
+      setAvatarError("头像没有上传成功，请换一张 4MB 以内的图片。");
+    } finally {
+      setAvatarUploading(false);
+    }
+  };
 
   if (loading) return <div className="page-loading" />;
 
@@ -25,12 +52,18 @@ export function MePage() {
   return (
     <div className="me-page page-width">
       <header className="profile-header">
-        <div className={`avatar avatar-${user.avatarCode} large-avatar`} aria-hidden="true">
-          {user.displayName.slice(0, 1)}
+        <div className={`avatar avatar-${user.avatarCode} ${user.avatarUrl ? "avatar-image" : ""} large-avatar`} aria-hidden="true">
+          {user.avatarUrl ? <img src={user.avatarUrl} alt="" /> : user.displayName.slice(0, 1)}
         </div>
         <div>
           <h1>{user.displayName}</h1>
           <p>{user.email}</p>
+          <label className="avatar-upload-button">
+            <Camera weight="duotone" />
+            {avatarUploading ? "正在上传头像" : "更换头像"}
+            <input type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={(event) => void uploadAvatar(event)} disabled={avatarUploading} />
+          </label>
+          {avatarError && <p className="profile-inline-error">{avatarError}</p>}
         </div>
       </header>
 

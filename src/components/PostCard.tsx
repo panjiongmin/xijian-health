@@ -18,6 +18,13 @@ type PostCardProps = {
   onEncouragementChange?: (postId: string, encouraged: boolean, count: number) => void;
 };
 
+type AvatarViewProps = {
+  name: string;
+  code: string;
+  imageUrl?: string | null;
+  className?: string;
+};
+
 function relativeTime(value: string) {
   const delta = Date.now() - new Date(value).getTime();
   const minutes = Math.max(1, Math.floor(delta / 60_000));
@@ -25,6 +32,14 @@ function relativeTime(value: string) {
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours} 小时前`;
   return `${Math.floor(hours / 24)} 天前`;
+}
+
+function AvatarView({ name, code, imageUrl, className = "" }: AvatarViewProps) {
+  return (
+    <div className={`avatar avatar-${code} ${imageUrl ? "avatar-image" : ""} ${className}`.trim()} aria-hidden="true">
+      {imageUrl ? <img src={imageUrl} alt="" loading="lazy" decoding="async" /> : name.slice(0, 1)}
+    </div>
+  );
 }
 
 export function PostCard({ post, onEncouragementChange }: PostCardProps) {
@@ -131,12 +146,10 @@ export function PostCard({ post, onEncouragementChange }: PostCardProps) {
   return (
     <article className="community-post">
       <header className="post-header">
-        <div className={`avatar avatar-${post.avatarCode}`} aria-hidden="true">
-          {post.nickname.slice(0, 1)}
-        </div>
-        <div>
+        <AvatarView name={post.nickname} code={post.avatarCode} imageUrl={post.avatarUrl} />
+        <div className="post-person">
           <strong>{post.nickname}</strong>
-          <span>{relativeTime(post.createdAt)}</span>
+          <span>松眸训练 · {relativeTime(post.createdAt)}</span>
         </div>
         <button type="button" className="icon-button quiet" aria-label="更多操作">
           <DotsThree weight="bold" />
@@ -144,7 +157,10 @@ export function PostCard({ post, onEncouragementChange }: PostCardProps) {
       </header>
 
       <div className="post-body">
-        <p className="post-action">完成了松眸训练</p>
+        <div className="post-action-row">
+          <p className="post-action">完成了今日训练</p>
+          <span>{post.durationBucket}</span>
+        </div>
         <div className="post-stats" aria-label="公开打卡数据">
           {post.publicStreak !== null && (
             <div>
@@ -166,6 +182,11 @@ export function PostCard({ post, onEncouragementChange }: PostCardProps) {
           )}
         </div>
         {post.note && <p className="post-note">{post.note}</p>}
+        {post.imageUrl && (
+          <figure className="post-image">
+            <img src={post.imageUrl} alt={`${post.nickname} 分享的打卡图片`} loading="lazy" decoding="async" />
+          </figure>
+        )}
       </div>
 
       <footer className="post-footer">
@@ -206,6 +227,7 @@ export function PostCard({ post, onEncouragementChange }: PostCardProps) {
             <div className="comment-source">
               <span>完成了松眸训练</span>
               {post.note && <p>{post.note}</p>}
+              {post.imageUrl && <img src={post.imageUrl} alt="" loading="lazy" decoding="async" />}
             </div>
 
             <div className="comment-list" aria-live="polite">
@@ -223,9 +245,11 @@ export function PostCard({ post, onEncouragementChange }: PostCardProps) {
               ) : (
                 comments.map((comment) => (
                   <article key={comment.id} className="comment-item">
-                    <div className={`avatar avatar-${comment.avatarCode}`} aria-hidden="true">
-                      {comment.nickname.slice(0, 1)}
-                    </div>
+                    <AvatarView
+                      name={comment.nickname}
+                      code={comment.avatarCode}
+                      imageUrl={comment.avatarUrl}
+                    />
                     <div>
                       <header>
                         <strong>{comment.nickname}</strong>

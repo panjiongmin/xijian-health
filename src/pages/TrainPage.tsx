@@ -5,6 +5,7 @@ import {
   Check,
   CheckCircle,
   Eye,
+  ImageSquare,
   Pause,
   Play,
   ShieldCheck,
@@ -13,12 +14,12 @@ import {
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { apiRequest } from "../api";
 import { useAuth } from "../auth-context";
 import { TrainingOrb } from "../components/TrainingOrb";
-import type { TrainingCompleteResult } from "../types";
+import type { TrainingCompleteResult, UploadedAsset } from "../types";
 
 type TrainingPhase = "ready" | "left" | "switch" | "right" | "relax" | "complete";
 type TrainingPreference = {
@@ -118,6 +119,9 @@ export function TrainPage() {
   const [saving, setSaving] = useState(false);
   const [showShare, setShowShare] = useState(false);
   const [shareNote, setShareNote] = useState("");
+  const [shareAsset, setShareAsset] = useState<UploadedAsset | null>(null);
+  const [shareImageUploading, setShareImageUploading] = useState(false);
+  const [shareImageError, setShareImageError] = useState("");
   const [sharing, setSharing] = useState(false);
   const [shared, setShared] = useState(false);
   const [error, setError] = useState("");
@@ -286,6 +290,8 @@ export function TrainPage() {
     setResult(null);
     setShared(false);
     setShareNote("");
+    setShareAsset(null);
+    setShareImageError("");
     savedRef.current = false;
   };
 
@@ -386,6 +392,7 @@ export function TrainPage() {
           showStreak: true,
           showWeekCount: true,
           showTotalCount: true,
+          imageAssetId: shareAsset?.id ?? "",
         }),
       });
       setShared(true);
@@ -394,6 +401,28 @@ export function TrainPage() {
       setError("发布没有成功，请稍后再试。");
     } finally {
       setSharing(false);
+    }
+  };
+
+  const uploadShareImage = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || shareImageUploading) return;
+    setShareImageUploading(true);
+    setShareImageError("");
+    try {
+      const form = new FormData();
+      form.append("kind", "community");
+      form.append("file", file);
+      const result = await apiRequest<{ asset: UploadedAsset }>("/api/assets/upload", {
+        method: "POST",
+        body: form,
+      });
+      setShareAsset(result.asset);
+    } catch {
+      setShareImageError("图片没有上传成功，请换一张 4MB 以内的图片。");
+    } finally {
+      setShareImageUploading(false);
     }
   };
 
@@ -472,7 +501,11 @@ export function TrainPage() {
   if (phase === "complete") {
     return (
       <div className="training-result page-width">
-        <CheckCircle weight="duotone" />
+        <div className="completion-feedback" aria-hidden="true">
+          <span />
+          <span />
+          <CheckCircle weight="duotone" />
+        </div>
         <span className="eyebrow">今日完成</span>
         <h1>双眼都休息了一会儿。</h1>
         <p>{saving ? "正在保存记录" : user ? "打卡已经保存到你的记录。" : "本次已保存在这台设备，登录后可以长期同步。"}</p>
@@ -507,6 +540,27 @@ export function TrainPage() {
                 <span>写一句感受，可不填</span>
                 <textarea value={shareNote} onChange={(event) => setShareNote(event.target.value)} maxLength={80} rows={3} placeholder="例如：做完以后，准备去窗边看看远处。" />
               </label>
+              <div className="share-image-field">
+                <div>
+                  <ImageSquare weight="duotone" />
+                  <span>
+                    <strong>添加一张图片</strong>
+                    <small>可选，支持 JPG、PNG、WebP、GIF，最大 4MB。</small>
+                  </span>
+                </div>
+                {shareAsset?.url ? (
+                  <figure>
+                    <img src={shareAsset.url} alt="即将发布的社区图片预览" />
+                    <button type="button" onClick={() => setShareAsset(null)}>移除</button>
+                  </figure>
+                ) : (
+                  <label className="secondary-button full">
+                    {shareImageUploading ? "正在上传" : "选择图片"}
+                    <input type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={(event) => void uploadShareImage(event)} disabled={shareImageUploading} />
+                  </label>
+                )}
+                {shareImageError && <p>{shareImageError}</p>}
+              </div>
               <div className="privacy-reminder"><ShieldCheck /><span>舒适度、邮箱和训练明细不会公开。</span></div>
               <button type="button" className="primary-button full" onClick={() => void publish()} disabled={sharing}>{sharing ? "正在发布" : "确认发布"}</button>
             </div>

@@ -3,6 +3,7 @@ export type User = {
   email: string;
   displayName: string;
   avatarCode: string;
+  avatarUrl: string | null;
   createdAt: string;
 };
 
@@ -19,6 +20,7 @@ export type CommunityPost = {
   userId: string;
   nickname: string;
   avatarCode: string;
+  avatarUrl: string | null;
   productCode: string;
   localDate: string;
   durationBucket: string;
@@ -26,6 +28,7 @@ export type CommunityPost = {
   publicWeekCount: number | null;
   publicTotalCount: number | null;
   note: string | null;
+  imageUrl: string | null;
   encouragementCount: number;
   commentCount: number;
   encouragedByMe: boolean;
@@ -38,6 +41,7 @@ export type CommunityComment = {
   userId: string;
   nickname: string;
   avatarCode: string;
+  avatarUrl: string | null;
   content: string;
   canDelete: boolean;
   createdAt: string;
@@ -55,4 +59,14 @@ export type Checkin = {
 export type TrainingCompleteResult = {
   checkin: Checkin;
   summary: HomeSummary;
+};
+
+export type UploadedAsset = {
+  id: string;
+  kind: "avatar" | "community" | "nutrition";
+  url: string | null;
+  contentType: string;
+  byteSize: number;
+  originalName: string | null;
+  createdAt: string;
 };

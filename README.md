@@ -10,6 +10,7 @@
 - 邮箱注册、登录、HttpOnly Session
 - D1 训练记录与每日幂等打卡
 - 社区动态、公开数据快照和鼓励互动
+- R2 图片上传：头像、社区图片、饮食图片
 - 近 7 天摘要与月历记录
 - 浅色与深色模式
 - Cloudflare Workers Static Assets 一体化部署

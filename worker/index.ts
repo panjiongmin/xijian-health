@@ -11,6 +11,7 @@ const XFYUN_TTS_DEFAULT_ORAL_LEVEL = "mid";
 const XFYUN_TTS_TIMEOUT_MS = 15_000;
 const XFYUN_TTS_MAX_AUDIO_BYTES = 1_200_000;
 const XFYUN_TTS_CACHE_SECONDS = 60 * 60 * 24 * 30;
+const MAX_IMAGE_UPLOAD_BYTES = 4 * 1024 * 1024;
 
 type JsonObject = Record<string, unknown>;
 
@@ -19,6 +20,7 @@ type SessionUserRow = {
   email: string;
   displayName: string;
   avatarCode: string;
+  avatarImageKey: string | null;
   createdAt: string;
   timezone: string;
 };
@@ -37,6 +39,7 @@ type CommunityPostRow = {
   userId: string;
   nickname: string;
   avatarCode: string;
+  avatarImageKey: string | null;
   productCode: string;
   localDate: string;
   durationBucket: string;
@@ -44,6 +47,7 @@ type CommunityPostRow = {
   publicWeekCount: number | null;
   publicTotalCount: number | null;
   note: string | null;
+  imageKey: string | null;
   encouragementCount: number;
   commentCount: number;
   encouragedByMe: number;
@@ -56,8 +60,21 @@ type CommunityCommentRow = {
   userId: string;
   nickname: string;
   avatarCode: string;
+  avatarImageKey: string | null;
   content: string;
   canDelete: number;
+  createdAt: string;
+};
+
+type AssetKind = "avatar" | "community" | "nutrition";
+
+type AssetRow = {
+  id: string;
+  kind: AssetKind;
+  objectKey: string;
+  contentType: string;
+  byteSize: number;
+  originalName: string | null;
   createdAt: string;
 };
 
@@ -124,6 +141,12 @@ const apiHeaders = {
 const audioHeaders = {
   "Cache-Control": `public, max-age=${XFYUN_TTS_CACHE_SECONDS}`,
   "Content-Type": "audio/mpeg",
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+};
+
+const publicAssetHeaders = {
+  "Cache-Control": "public, max-age=31536000, immutable",
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "strict-origin-when-cross-origin",
 };
@@ -328,6 +351,7 @@ async function currentUser(request: Request, env: Env): Promise<SessionUserRow |
       u.email,
       u.display_name AS displayName,
       COALESCE(cp.avatar_code, 'moss') AS avatarCode,
+      cp.avatar_image_key AS avatarImageKey,
       u.created_at AS createdAt,
       u.timezone
     FROM sessions s
@@ -348,6 +372,7 @@ function publicUser(user: SessionUserRow) {
     email: user.email,
     displayName: user.displayName,
     avatarCode: user.avatarCode,
+    avatarUrl: assetUrl(user.avatarImageKey),
     createdAt: user.createdAt,
   };
 }
@@ -424,6 +449,155 @@ function avatarFromId(id: string): string {
   const choices = ["moss", "sage", "fern", "pond", "stone"];
   const first = id.codePointAt(0) ?? 0;
   return choices[first % choices.length] ?? "moss";
+}
+
+function assetUrl(key: string | null | undefined): string | null {
+  if (!key) return null;
+  return `/api/assets/${key.split("/").map((part) => encodeURIComponent(part)).join("/")}`;
+}
+
+function publicAsset(row: AssetRow) {
+  return {
+    id: row.id,
+    kind: row.kind,
+    url: assetUrl(row.objectKey),
+    contentType: row.contentType,
+    byteSize: row.byteSize,
+    originalName: row.originalName,
+    createdAt: row.createdAt,
+  };
+}
+
+function validateAssetKey(key: string): boolean {
+  return /^uploads\/(avatar|community|nutrition)\/[a-zA-Z0-9-]+\/[a-zA-Z0-9-]+\.(jpe?g|png|webp|gif)$/.test(key);
+}
+
+function imageExtension(contentType: string): string | null {
+  switch (contentType.toLowerCase()) {
+    case "image/jpeg":
+    case "image/jpg":
+      return "jpg";
+    case "image/png":
+      return "png";
+    case "image/webp":
+      return "webp";
+    case "image/gif":
+      return "gif";
+    default:
+      return null;
+  }
+}
+
+function safeOriginalName(value: string): string {
+  return value
+    .replace(/[^\p{L}\p{N}._ -]+/gu, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
+}
+
+function readAssetKind(value: FormDataEntryValue | null): AssetKind | null {
+  return value === "avatar" || value === "community" || value === "nutrition" ? value : null;
+}
+
+async function handleAsset(request: Request, env: Env, key: string): Promise<Response> {
+  const objectKey = decodeURIComponent(key);
+  if (!validateAssetKey(objectKey)) return error("图片地址无效。", 404);
+  const object = await env.ASSETS_BUCKET.get(objectKey);
+  if (!object) return error("没有找到这张图片。", 404);
+
+  const headers = new Headers(publicAssetHeaders);
+  headers.set("Content-Type", object.httpMetadata?.contentType ?? "application/octet-stream");
+  headers.set("ETag", object.httpEtag);
+  const ifNoneMatch = request.headers.get("If-None-Match");
+  if (ifNoneMatch && ifNoneMatch === object.httpEtag) {
+    return new Response(null, { status: 304, headers });
+  }
+  return new Response(object.body, { headers });
+}
+
+async function handleUploadAsset(request: Request, env: Env, user: SessionUserRow): Promise<Response> {
+  const length = Number(request.headers.get("content-length") ?? "0");
+  if (Number.isFinite(length) && length > MAX_IMAGE_UPLOAD_BYTES + 16_384) {
+    return error("图片不能超过 4MB。", 413);
+  }
+
+  const form = await request.formData().catch(() => null);
+  if (!form) return error("图片上传内容无效。", 400);
+
+  const kind = readAssetKind(form.get("kind"));
+  const file = form.get("file");
+  if (!kind) return error("图片用途无效。", 400);
+  if (!(file instanceof File)) return error("请选择一张图片。", 400);
+  if (file.size <= 0) return error("图片不能为空。", 400);
+  if (file.size > MAX_IMAGE_UPLOAD_BYTES) return error("图片不能超过 4MB。", 413);
+
+  const extension = imageExtension(file.type);
+  if (!extension) return error("仅支持 JPG、PNG、WebP 或 GIF 图片。", 400);
+
+  const id = crypto.randomUUID();
+  const objectKey = `uploads/${kind}/${user.id}/${id}.${extension}`;
+  const bytes = await file.arrayBuffer();
+  await env.ASSETS_BUCKET.put(objectKey, bytes, {
+    httpMetadata: {
+      contentType: file.type,
+      cacheControl: publicAssetHeaders["Cache-Control"],
+    },
+    customMetadata: {
+      userId: user.id,
+      kind,
+    },
+  });
+
+  const originalName = safeOriginalName(file.name);
+  const now = sqlTimestamp(new Date());
+  try {
+    await env.DB.prepare(
+      `INSERT INTO asset_uploads
+        (id, user_id, kind, object_key, content_type, byte_size, original_name, created_at, updated_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)`,
+    ).bind(id, user.id, kind, objectKey, file.type, file.size, originalName || null, now).run();
+
+    if (kind === "avatar") {
+      await env.DB.prepare(
+        "UPDATE community_profiles SET avatar_asset_id = ?1, avatar_image_key = ?2, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?3",
+      ).bind(id, objectKey, user.id).run();
+    }
+  } catch (cause) {
+    await env.ASSETS_BUCKET.delete(objectKey).catch(() => undefined);
+    console.error(JSON.stringify({ message: "asset metadata save failed", error: cause instanceof Error ? cause.message : String(cause) }));
+    return error("图片没有保存成功，请稍后再试。", 500);
+  }
+
+  return json({
+    asset: {
+      id,
+      kind,
+      url: assetUrl(objectKey),
+      contentType: file.type,
+      byteSize: file.size,
+      originalName: originalName || null,
+      createdAt: now,
+    },
+  }, 201);
+}
+
+async function handleNutritionImages(env: Env, user: SessionUserRow): Promise<Response> {
+  const rows = await env.DB.prepare(
+    `SELECT
+      id,
+      kind,
+      object_key AS objectKey,
+      content_type AS contentType,
+      byte_size AS byteSize,
+      original_name AS originalName,
+      created_at AS createdAt
+    FROM asset_uploads
+    WHERE user_id = ?1 AND kind = 'nutrition' AND status = 'active'
+    ORDER BY created_at DESC
+    LIMIT 24`,
+  ).bind(user.id).all<AssetRow>();
+  return json({ images: rows.results.map(publicAsset) });
 }
 
 function trimBinding(value: string | undefined): string {
@@ -842,6 +1016,7 @@ async function handleFeed(request: Request, env: Env, user: SessionUserRow | nul
       p.user_id AS userId,
       cp.nickname,
       cp.avatar_code AS avatarCode,
+      cp.avatar_image_key AS avatarImageKey,
       p.product_code AS productCode,
       p.local_date AS localDate,
       p.duration_bucket AS durationBucket,
@@ -849,6 +1024,7 @@ async function handleFeed(request: Request, env: Env, user: SessionUserRow | nul
       p.public_week_count AS publicWeekCount,
       p.public_total_count AS publicTotalCount,
       p.note,
+      p.image_key AS imageKey,
       (SELECT COUNT(*) FROM community_reactions r WHERE r.post_id = p.id) AS encouragementCount,
       (SELECT COUNT(*) FROM community_comments c WHERE c.post_id = p.id AND c.moderation_status = 'approved') AS commentCount,
       EXISTS(SELECT 1 FROM community_reactions my WHERE my.post_id = p.id AND my.user_id = ?) AS encouragedByMe,
@@ -860,7 +1036,12 @@ async function handleFeed(request: Request, env: Env, user: SessionUserRow | nul
     LIMIT ?`,
   ).bind(...params);
   const rows = await statement.all<CommunityPostRow>();
-  const posts = rows.results.map((row) => ({ ...row, encouragedByMe: Boolean(row.encouragedByMe) }));
+  const posts = rows.results.map((row) => ({
+    ...row,
+    avatarUrl: assetUrl(row.avatarImageKey),
+    imageUrl: assetUrl(row.imageKey),
+    encouragedByMe: Boolean(row.encouragedByMe),
+  }));
   return json({ posts, nextCursor: posts.at(-1)?.createdAt ?? null });
 }
 
@@ -869,6 +1050,7 @@ async function handlePublish(request: Request, env: Env, user: SessionUserRow): 
   if (!body) return error("请求内容无效。", 400);
   const checkinId = readString(body, "checkinId");
   const note = readString(body, "note");
+  const imageAssetId = readString(body, "imageAssetId");
   if (note.length > 80) return error("感受最多填写 80 个字符。", 400);
   const checkin = await env.DB.prepare(
     "SELECT id, local_date AS localDate, duration_sec AS durationSec FROM checkins WHERE id = ?1 AND user_id = ?2 LIMIT 1",
@@ -886,12 +1068,20 @@ async function handlePublish(request: Request, env: Env, user: SessionUserRow): 
   const showStreak = body.showStreak !== false;
   const showWeekCount = body.showWeekCount !== false;
   const showTotalCount = body.showTotalCount !== false;
+  let imageKey: string | null = null;
+  if (imageAssetId) {
+    const asset = await env.DB.prepare(
+      "SELECT object_key AS objectKey FROM asset_uploads WHERE id = ?1 AND user_id = ?2 AND kind = 'community' AND status = 'active' LIMIT 1",
+    ).bind(imageAssetId, user.id).first<{ objectKey: string }>();
+    if (!asset) return error("没有找到可发布的图片。", 400);
+    imageKey = asset.objectKey;
+  }
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO community_posts
         (id, user_id, checkin_id, product_code, local_date, duration_bucket,
-         public_streak, public_week_count, public_total_count, note)
-      VALUES (?1, ?2, ?3, 'eye-focus', ?4, ?5, ?6, ?7, ?8, ?9)`,
+         public_streak, public_week_count, public_total_count, note, image_asset_id, image_key)
+      VALUES (?1, ?2, ?3, 'eye-focus', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`,
     ).bind(
       id,
       user.id,
@@ -902,6 +1092,8 @@ async function handlePublish(request: Request, env: Env, user: SessionUserRow): 
       showWeekCount ? summary.weekCount : null,
       showTotalCount ? summary.totalCount : null,
       note || null,
+      imageAssetId || null,
+      imageKey,
     ),
     env.DB.prepare("UPDATE community_profiles SET visibility = 'public', updated_at = CURRENT_TIMESTAMP WHERE user_id = ?1").bind(user.id),
   ]);
@@ -943,6 +1135,7 @@ async function handleComments(postId: string, request: Request, env: Env, user: 
       c.user_id AS userId,
       cp.nickname,
       cp.avatar_code AS avatarCode,
+      cp.avatar_image_key AS avatarImageKey,
       c.content,
       CASE WHEN c.user_id = ?1 THEN 1 ELSE 0 END AS canDelete,
       c.created_at AS createdAt
@@ -953,7 +1146,11 @@ async function handleComments(postId: string, request: Request, env: Env, user: 
     LIMIT ?3`,
   ).bind(user?.id ?? "", postId, limit).all<CommunityCommentRow>();
   return json({
-    comments: rows.results.map((row) => ({ ...row, canDelete: Boolean(row.canDelete) })),
+    comments: rows.results.map((row) => ({
+      ...row,
+      avatarUrl: assetUrl(row.avatarImageKey),
+      canDelete: Boolean(row.canDelete),
+    })),
   });
 }
 
@@ -981,6 +1178,7 @@ async function handleCreateComment(postId: string, request: Request, env: Env, u
       c.user_id AS userId,
       cp.nickname,
       cp.avatar_code AS avatarCode,
+      cp.avatar_image_key AS avatarImageKey,
       c.content,
       1 AS canDelete,
       c.created_at AS createdAt
@@ -989,7 +1187,13 @@ async function handleCreateComment(postId: string, request: Request, env: Env, u
     WHERE c.id = ?1
     LIMIT 1`,
   ).bind(id).first<CommunityCommentRow>();
-  return json({ comment: comment ? { ...comment, canDelete: true } : null }, 201);
+  return json({
+    comment: comment ? {
+      ...comment,
+      avatarUrl: assetUrl(comment.avatarImageKey),
+      canDelete: true,
+    } : null,
+  }, 201);
 }
 
 async function handleDeleteComment(commentId: string, env: Env, user: SessionUserRow): Promise<Response> {
@@ -1019,6 +1223,8 @@ async function route(request: Request, env: Env): Promise<Response> {
   }
 
   if (method === "GET" && path === "/api/health") return json({ status: "ok" });
+  const assetMatch = path.match(/^\/api\/assets\/(.+)$/);
+  if (method === "GET" && assetMatch?.[1]) return handleAsset(request, env, assetMatch[1]);
   if (method === "GET" && path === "/api/tts/training") return handleTrainingSpeech(request, env);
   if (method === "POST" && path === "/api/auth/register") return handleRegister(request, env);
   if (method === "POST" && path === "/api/auth/login") return handleLogin(request, env);
@@ -1035,6 +1241,8 @@ async function route(request: Request, env: Env): Promise<Response> {
   }
 
   if (!user) return error("请先登录。", 401);
+  if (method === "POST" && path === "/api/assets/upload") return handleUploadAsset(request, env, user);
+  if (method === "GET" && path === "/api/nutrition/images") return handleNutritionImages(env, user);
   if (method === "POST" && path === "/api/training/complete") return handleTrainingComplete(request, env, user);
   if (method === "GET" && path === "/api/checkins") return handleCheckins(env, user);
   if (method === "POST" && path === "/api/community/posts") return handlePublish(request, env, user);
