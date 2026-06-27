@@ -502,6 +502,13 @@ async function signXfyunWebSocketUrl(endpoint: string, apiKey: string, apiSecret
   return url.toString();
 }
 
+function websocketUrlToFetchUrl(endpoint: string): string {
+  const url = new URL(endpoint);
+  if (url.protocol === "wss:") url.protocol = "https:";
+  if (url.protocol === "ws:") url.protocol = "http:";
+  return url.toString();
+}
+
 async function connectXfyunWebSocket(config: XfyunTtsConfig): Promise<WebSocket> {
   const endpoint = config.apiPassword
     ? config.endpoint
@@ -509,7 +516,7 @@ async function connectXfyunWebSocket(config: XfyunTtsConfig): Promise<WebSocket>
   const headers = new Headers({ Upgrade: "websocket" });
   if (config.apiPassword) headers.set("x-api-key", config.apiPassword);
 
-  const response = await fetch(endpoint, { method: "GET", headers });
+  const response = await fetch(websocketUrlToFetchUrl(endpoint), { method: "GET", headers });
   const webSocket = response.webSocket;
   if (response.status !== 101 || !webSocket) {
     throw new Error(`xunfei websocket failed with status ${response.status}`);
@@ -633,7 +640,18 @@ async function handleTrainingSpeech(request: Request, env: Env): Promise<Respons
     });
   }
 
-  const audio = await synthesizeWithXfyun(config, text);
+  let audio: Uint8Array<ArrayBuffer>;
+  try {
+    audio = await synthesizeWithXfyun(config, text);
+  } catch (cause) {
+    console.error(JSON.stringify({
+      message: "xfyun tts synthesis failed",
+      phase,
+      error: cause instanceof Error ? cause.message : String(cause),
+    }));
+    return error("讯飞语音合成暂不可用，已自动使用备用语音。", 502);
+  }
+
   await env.ASSETS_BUCKET.put(key, audio, {
     httpMetadata: {
       contentType: "audio/mpeg",
