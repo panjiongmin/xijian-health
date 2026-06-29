@@ -47,6 +47,14 @@ const CYCLE_SECONDS_MAX = 20;
 const MIN_SCALE_MIN = 0.2;
 const MIN_SCALE_MAX = 1.1;
 
+type BrowserWindowWithAudioContext = Window & typeof globalThis & {
+  webkitAudioContext?: typeof AudioContext;
+};
+
+function getAudioContextConstructor(): typeof AudioContext | null {
+  return window.AudioContext || (window as BrowserWindowWithAudioContext).webkitAudioContext || null;
+}
+
 function clampNumber(value: number, min: number, max: number, fallback: number): number {
   if (!Number.isFinite(value)) return fallback;
   return Math.min(max, Math.max(min, value));
@@ -129,8 +137,8 @@ export function TrainPage() {
   const [fullscreenSupported, setFullscreenSupported] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const savedRef = useRef(false);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const audioUrlRef = useRef<string | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const speechRequestRef = useRef(0);
 
   const isActive = activePhases.includes(phase as Exclude<TrainingPhase, "ready" | "complete">);
@@ -170,17 +178,46 @@ export function TrainPage() {
     setPreference((current) => normalizePreference({ ...current, minScale: current.minScale + delta }));
   };
 
+  const unlockVoiceAudio = useCallback(async () => {
+    const AudioContextConstructor = getAudioContextConstructor();
+    if (!AudioContextConstructor) return false;
+
+    let context = audioContextRef.current;
+    if (!context) {
+      context = new AudioContextConstructor();
+      audioContextRef.current = context;
+    }
+
+    try {
+      if (context.state === "suspended") await context.resume();
+
+      // A one-sample silent buffer is enough to bind the audio context to the
+      // user's start tap on mobile browsers. Later phase prompts can then play
+      // decoded Xunfei audio instead of falling back to Web Speech.
+      const source = context.createBufferSource();
+      source.buffer = context.createBuffer(1, 1, 22050);
+      source.connect(context.destination);
+      source.start(0);
+      return context.state === "running";
+    } catch {
+      return false;
+    }
+  }, []);
+
   const cancelSpeech = useCallback(() => {
     speechRequestRef.current += 1;
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.removeAttribute("src");
-      audioRef.current.load();
-      audioRef.current = null;
-    }
-    if (audioUrlRef.current) {
-      URL.revokeObjectURL(audioUrlRef.current);
-      audioUrlRef.current = null;
+    if (audioSourceRef.current) {
+      try {
+        audioSourceRef.current.stop();
+      } catch {
+        // The source may already have ended; stopping is best-effort.
+      }
+      try {
+        audioSourceRef.current.disconnect();
+      } catch {
+        // Disconnect is best-effort.
+      }
+      audioSourceRef.current = null;
     }
     if ("speechSynthesis" in window) window.speechSynthesis.cancel();
   }, []);
@@ -204,47 +241,43 @@ export function TrainPage() {
         headers: { Accept: "audio/mpeg" },
       });
       if (!response.ok) throw new Error("tts unavailable");
-      const audioBlob = await response.blob();
+      const audioBytes = await response.arrayBuffer();
       if (speechRequestRef.current !== requestId) return;
 
-      const audioUrl = URL.createObjectURL(audioBlob);
-      audioUrlRef.current = audioUrl;
-      const audio = new Audio(audioUrl);
-      audioRef.current = audio;
-      audio.onended = () => {
-        if (audioRef.current === audio) audioRef.current = null;
-        if (audioUrlRef.current === audioUrl) {
-          URL.revokeObjectURL(audioUrl);
-          audioUrlRef.current = null;
-        }
+      const ready = await unlockVoiceAudio();
+      const context = audioContextRef.current;
+      if (!ready || !context) throw new Error("audio context locked");
+
+      const audioBuffer = await context.decodeAudioData(audioBytes.slice(0));
+      if (speechRequestRef.current !== requestId) return;
+
+      const source = context.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(context.destination);
+      source.onended = () => {
+        if (audioSourceRef.current === source) audioSourceRef.current = null;
       };
-      audio.onerror = () => {
-        if (speechRequestRef.current === requestId) {
-          if (audioRef.current === audio) audioRef.current = null;
-          if (audioUrlRef.current === audioUrl) {
-            URL.revokeObjectURL(audioUrl);
-            audioUrlRef.current = null;
-          }
-          speakBrowserInstruction(message);
-        }
-      };
-      await audio.play();
+      audioSourceRef.current = source;
+      source.start(0);
     } catch {
       if (speechRequestRef.current === requestId) {
-        if (audioRef.current) {
-          audioRef.current.pause();
-          audioRef.current.removeAttribute("src");
-          audioRef.current.load();
-          audioRef.current = null;
-        }
-        if (audioUrlRef.current) {
-          URL.revokeObjectURL(audioUrlRef.current);
-          audioUrlRef.current = null;
+        if (audioSourceRef.current) {
+          try {
+            audioSourceRef.current.stop();
+          } catch {
+            // The source may already have ended; stopping is best-effort.
+          }
+          try {
+            audioSourceRef.current.disconnect();
+          } catch {
+            // Disconnect is best-effort.
+          }
+          audioSourceRef.current = null;
         }
         speakBrowserInstruction(message);
       }
     }
-  }, [cancelSpeech, speakBrowserInstruction]);
+  }, [cancelSpeech, speakBrowserInstruction, unlockVoiceAudio]);
 
   const requestFullscreen = async () => {
     if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
@@ -274,6 +307,7 @@ export function TrainPage() {
 
   const start = () => {
     setError("");
+    if (preference.voiceAssist) void unlockVoiceAudio();
     void requestFullscreen();
     setPhase("left");
     setSeconds(durations.left);
