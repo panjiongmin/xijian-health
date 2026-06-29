@@ -1,4 +1,5 @@
 import {
+  Brain,
   CalendarDots,
   Compass,
   Eye,
@@ -33,6 +34,7 @@ function resolveStoredTheme(): Theme {
 const mainLinks = [
   { to: "/", label: "首页", icon: House },
   { to: "/train", label: "训练", icon: PlayCircle },
+  { to: "/memory", label: "记忆", icon: Brain },
   { to: "/discover", label: "发现", icon: Compass },
   { to: "/community", label: "社区", icon: UsersThree },
   { to: "/records", label: "记录", icon: CalendarDots },

@@ -70,3 +70,76 @@ export type UploadedAsset = {
   originalName: string | null;
   createdAt: string;
 };
+
+export type MemorySummary = {
+  totalItems: number;
+  dueCount: number;
+  reviewedToday: number;
+  rememberedToday: number;
+  forgottenToday: number;
+  retention7d: number;
+  streak: number;
+  recentDates: string[];
+};
+
+export type MemoryDeck = {
+  id: string;
+  name: string;
+  description: string | null;
+  itemCount: number;
+  dueCount: number;
+  createdAt: string;
+};
+
+export type MemoryItem = {
+  id: string;
+  deckId: string | null;
+  deckName: string | null;
+  prompt: string;
+  answer: string;
+  category: string;
+  tags: string[];
+  status: string;
+  easeFactor: number;
+  intervalDays: number;
+  reviewCount: number;
+  lapseCount: number;
+  nextReviewAt: string;
+  lastReviewedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type MemorySessionResult = {
+  session: {
+    id: string;
+    mode: string;
+    itemCount: number;
+    rememberedCount: number;
+    forgottenCount: number;
+    durationSec: number;
+    localDate: string;
+    createdAt: string;
+  };
+  summary: MemorySummary;
+};
+
+export type MemoryLocus = {
+  id: string;
+  palaceId?: string;
+  title: string;
+  positionOrder: number;
+  description: string | null;
+  itemId: string | null;
+  prompt: string | null;
+  createdAt: string;
+};
+
+export type MemoryPalace = {
+  id: string;
+  name: string;
+  sceneType: string;
+  lociCount: number;
+  createdAt: string;
+  loci: MemoryLocus[];
+};

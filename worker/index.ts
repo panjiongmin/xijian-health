@@ -78,6 +78,75 @@ type AssetRow = {
   createdAt: string;
 };
 
+type MemoryItemRow = {
+  id: string;
+  deckId: string | null;
+  deckName: string | null;
+  prompt: string;
+  answer: string;
+  category: string;
+  tags: string | null;
+  status: string;
+  easeFactor: number;
+  intervalDays: number;
+  reviewCount: number;
+  lapseCount: number;
+  nextReviewAt: string;
+  lastReviewedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type MemoryDeckRow = {
+  id: string;
+  name: string;
+  description: string | null;
+  itemCount: number;
+  dueCount: number;
+  createdAt: string;
+};
+
+type MemoryPalaceRow = {
+  id: string;
+  name: string;
+  sceneType: string;
+  lociCount: number;
+  createdAt: string;
+};
+
+type MemoryLocusRow = {
+  id: string;
+  palaceId?: string;
+  title: string;
+  positionOrder: number;
+  description: string | null;
+  itemId: string | null;
+  prompt: string | null;
+  createdAt: string;
+};
+
+type MemorySummary = {
+  totalItems: number;
+  dueCount: number;
+  reviewedToday: number;
+  rememberedToday: number;
+  forgottenToday: number;
+  retention7d: number;
+  streak: number;
+  recentDates: string[];
+};
+
+type MemorySessionRow = {
+  id: string;
+  mode: string;
+  itemCount: number;
+  rememberedCount: number;
+  forgottenCount: number;
+  durationSec: number;
+  localDate: string;
+  createdAt: string;
+};
+
 type Summary = {
   completedToday: boolean;
   weekCount: number;
@@ -188,6 +257,77 @@ function normalizeCommentContent(value: string): string {
     .replace(/\r\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function normalizeMemoryText(value: string, maxLength: number): string {
+  return value
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\n{4,}/g, "\n\n")
+    .trim()
+    .slice(0, maxLength);
+}
+
+function normalizeMemoryCategory(value: string): string {
+  const normalized = value.toLowerCase().replace(/[^a-z0-9_-]+/g, "").slice(0, 32);
+  return normalized || "learning";
+}
+
+function normalizeMemoryTags(value: string): string | null {
+  const tags = value
+    .split(/[,，#\s]+/g)
+    .map((tag) => tag.trim())
+    .filter(Boolean)
+    .slice(0, 8);
+  return tags.length > 0 ? JSON.stringify([...new Set(tags)]) : null;
+}
+
+function parseMemoryTags(value: string | null): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function clampInteger(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isInteger(value)) return fallback;
+  return Math.min(max, Math.max(min, value));
+}
+
+function scheduleMemoryReview(item: Pick<MemoryItemRow, "easeFactor" | "intervalDays" | "reviewCount" | "lapseCount">, rating: number) {
+  const currentEase = Number.isFinite(item.easeFactor) ? item.easeFactor : 2.5;
+  const currentInterval = Math.max(0, Number(item.intervalDays) || 0);
+  const reviewedBefore = item.reviewCount > 0;
+  let easeFactor = currentEase;
+  let intervalDays = 1;
+  let lapseCount = item.lapseCount;
+
+  if (rating === 0) {
+    easeFactor = Math.max(1.3, currentEase - 0.28);
+    intervalDays = 1;
+    lapseCount += 1;
+  } else if (rating === 1) {
+    easeFactor = Math.max(1.3, currentEase - 0.12);
+    intervalDays = reviewedBefore ? Math.max(1, Math.round(currentInterval * 1.2)) : 1;
+  } else if (rating === 2) {
+    intervalDays = reviewedBefore ? Math.max(3, Math.round(Math.max(1, currentInterval) * easeFactor)) : 3;
+  } else {
+    easeFactor = Math.min(3.2, currentEase + 0.16);
+    intervalDays = reviewedBefore ? Math.max(7, Math.round(Math.max(1, currentInterval) * (easeFactor + 0.55))) : 7;
+  }
+
+  const nextReview = new Date(Date.now() + intervalDays * 86_400_000);
+  return {
+    easeFactor: Number(easeFactor.toFixed(2)),
+    intervalDays,
+    lapseCount,
+    nextReviewAt: sqlTimestamp(nextReview),
+  };
 }
 
 function bytesToHex(value: ArrayBuffer | ArrayBufferView): string {
@@ -468,6 +608,50 @@ function publicAsset(row: AssetRow) {
   };
 }
 
+function publicMemoryItem(row: MemoryItemRow) {
+  return {
+    ...row,
+    tags: parseMemoryTags(row.tags),
+    easeFactor: Number(row.easeFactor),
+    intervalDays: Number(row.intervalDays),
+    reviewCount: Number(row.reviewCount),
+    lapseCount: Number(row.lapseCount),
+  };
+}
+
+function publicMemoryDeck(row: MemoryDeckRow) {
+  return {
+    ...row,
+    itemCount: Number(row.itemCount),
+    dueCount: Number(row.dueCount),
+  };
+}
+
+function publicMemoryPalace(row: MemoryPalaceRow, loci: MemoryLocusRow[] = []) {
+  return {
+    ...row,
+    lociCount: Number(row.lociCount),
+    loci: loci.map((locus) => ({
+      ...locus,
+      positionOrder: Number(locus.positionOrder),
+    })),
+  };
+}
+
+async function getOrCreateMemoryDeck(env: Env, user: SessionUserRow, name: string, description = ""): Promise<string> {
+  const cleanName = normalizeMemoryText(name || "默认卡片", 40);
+  const existing = await env.DB.prepare(
+    "SELECT id FROM memory_decks WHERE user_id = ?1 AND name = ?2 LIMIT 1",
+  ).bind(user.id, cleanName).first<{ id: string }>();
+  if (existing) return existing.id;
+
+  const id = crypto.randomUUID();
+  await env.DB.prepare(
+    "INSERT INTO memory_decks (id, user_id, name, description) VALUES (?1, ?2, ?3, ?4)",
+  ).bind(id, user.id, cleanName, normalizeMemoryText(description, 120) || null).run();
+  return id;
+}
+
 function validateAssetKey(key: string): boolean {
   return /^uploads\/(avatar|community|nutrition)\/[a-zA-Z0-9-]+\/[a-zA-Z0-9-]+\.(jpe?g|png|webp|gif)$/.test(key);
 }
@@ -598,6 +782,557 @@ async function handleNutritionImages(env: Env, user: SessionUserRow): Promise<Re
     LIMIT 24`,
   ).bind(user.id).all<AssetRow>();
   return json({ images: rows.results.map(publicAsset) });
+}
+
+const memoryItemSelect = `
+  i.id,
+  i.deck_id AS deckId,
+  d.name AS deckName,
+  i.prompt,
+  i.answer,
+  i.category,
+  i.tags,
+  i.status,
+  i.ease_factor AS easeFactor,
+  i.interval_days AS intervalDays,
+  i.review_count AS reviewCount,
+  i.lapse_count AS lapseCount,
+  i.next_review_at AS nextReviewAt,
+  i.last_reviewed_at AS lastReviewedAt,
+  i.created_at AS createdAt,
+  i.updated_at AS updatedAt
+`;
+
+const palaceTemplates: Record<string, Array<[string, string]>> = {
+  home: [
+    ["玄关", "进门第一眼看到的位置，用来放最重要的概念。"],
+    ["窗边", "把需要辨认的细节放在有光的位置。"],
+    ["书桌", "适合放公式、步骤和定义。"],
+    ["书架", "适合按分类摆放一组知识。"],
+    ["床头", "放临睡前想快速回忆的内容。"],
+  ],
+  route: [
+    ["出发点", "把主题放在路线开始处。"],
+    ["第一个路口", "放第一个分支或关键问题。"],
+    ["树下", "放容易混淆的例外。"],
+    ["长椅", "放需要停下来复述的内容。"],
+    ["终点", "放总结或输出任务。"],
+  ],
+  garden: [
+    ["门廊", "作为主题入口。"],
+    ["石径", "按顺序铺开步骤。"],
+    ["水池", "放需要冷静辨认的知识点。"],
+    ["花架", "放同类内容的对比。"],
+    ["亭子", "放最后的复盘问题。"],
+  ],
+  body: [
+    ["头顶", "放总标题或核心问题。"],
+    ["眼睛", "放需要观察的细节。"],
+    ["双手", "放操作步骤。"],
+    ["胸口", "放情绪或意义联想。"],
+    ["脚下", "放结论和下一步行动。"],
+  ],
+};
+
+function normalizeMemorySceneType(value: string): string {
+  const normalized = value.toLowerCase().replace(/[^a-z0-9_-]+/g, "").slice(0, 24);
+  return Object.prototype.hasOwnProperty.call(palaceTemplates, normalized) ? normalized : "home";
+}
+
+function readMemoryTags(body: JsonObject): string | null {
+  const value = body.tags;
+  if (Array.isArray(value)) {
+    return normalizeMemoryTags(value.filter((item): item is string => typeof item === "string").join(","));
+  }
+  return normalizeMemoryTags(readString(body, "tags"));
+}
+
+async function getMemorySummary(env: Env, user: SessionUserRow): Promise<MemorySummary> {
+  const today = localDate(user.timezone);
+  const weekStart = daysAgoDate(6, user.timezone);
+  const [itemResult, todayResult, weekResult, recentResult] = await env.DB.batch<{
+    totalItems?: number;
+    dueCount?: number | null;
+    reviewedToday?: number;
+    rememberedToday?: number | null;
+    forgottenToday?: number | null;
+    totalReviews?: number;
+    rememberedReviews?: number | null;
+    localDate?: string;
+  }>([
+    env.DB.prepare(
+      `SELECT
+        COUNT(*) AS totalItems,
+        SUM(CASE WHEN next_review_at <= datetime('now') THEN 1 ELSE 0 END) AS dueCount
+      FROM memory_items
+      WHERE user_id = ?1 AND status = 'active'`,
+    ).bind(user.id),
+    env.DB.prepare(
+      `SELECT
+        COUNT(*) AS reviewedToday,
+        SUM(CASE WHEN rating >= 2 THEN 1 ELSE 0 END) AS rememberedToday,
+        SUM(CASE WHEN rating = 0 THEN 1 ELSE 0 END) AS forgottenToday
+      FROM memory_reviews
+      WHERE user_id = ?1 AND local_date = ?2`,
+    ).bind(user.id, today),
+    env.DB.prepare(
+      `SELECT
+        COUNT(*) AS totalReviews,
+        SUM(CASE WHEN rating >= 2 THEN 1 ELSE 0 END) AS rememberedReviews
+      FROM memory_reviews
+      WHERE user_id = ?1 AND local_date >= ?2`,
+    ).bind(user.id, weekStart),
+    env.DB.prepare(
+      `SELECT DISTINCT local_date AS localDate
+      FROM memory_sessions
+      WHERE user_id = ?1 AND local_date >= ?2
+      ORDER BY local_date ASC`,
+    ).bind(user.id, weekStart),
+  ]);
+
+  const itemStats = itemResult.results[0] ?? {};
+  const todayStats = todayResult.results[0] ?? {};
+  const weekStats = weekResult.results[0] ?? {};
+  const totalReviews = Number(weekStats.totalReviews ?? 0);
+  const rememberedReviews = Number(weekStats.rememberedReviews ?? 0);
+  const recentDates = recentResult.results
+    .map((row) => row.localDate)
+    .filter((value): value is string => typeof value === "string");
+
+  const streakRows = await env.DB.prepare(
+    `SELECT DISTINCT local_date AS localDate
+    FROM memory_sessions
+    WHERE user_id = ?1
+    ORDER BY local_date DESC
+    LIMIT 366`,
+  ).bind(user.id).all<{ localDate: string }>();
+  const completed = new Set(streakRows.results.map((row) => row.localDate));
+  let streak = 0;
+  for (let offset = 0; offset < 366; offset += 1) {
+    if (!completed.has(daysAgoDate(offset, user.timezone))) break;
+    streak += 1;
+  }
+
+  return {
+    totalItems: Number(itemStats.totalItems ?? 0),
+    dueCount: Number(itemStats.dueCount ?? 0),
+    reviewedToday: Number(todayStats.reviewedToday ?? 0),
+    rememberedToday: Number(todayStats.rememberedToday ?? 0),
+    forgottenToday: Number(todayStats.forgottenToday ?? 0),
+    retention7d: totalReviews > 0 ? Math.round((rememberedReviews / totalReviews) * 100) : 0,
+    streak,
+    recentDates,
+  };
+}
+
+async function getMemoryDeckById(env: Env, user: SessionUserRow, deckId: string): Promise<MemoryDeckRow | null> {
+  return env.DB.prepare(
+    `SELECT
+      d.id,
+      d.name,
+      d.description,
+      COUNT(i.id) AS itemCount,
+      SUM(CASE WHEN i.next_review_at <= datetime('now') THEN 1 ELSE 0 END) AS dueCount,
+      d.created_at AS createdAt
+    FROM memory_decks d
+    LEFT JOIN memory_items i ON i.deck_id = d.id AND i.status = 'active'
+    WHERE d.id = ?1 AND d.user_id = ?2
+    GROUP BY d.id
+    LIMIT 1`,
+  ).bind(deckId, user.id).first<MemoryDeckRow>();
+}
+
+async function getMemoryItemById(env: Env, user: SessionUserRow, itemId: string): Promise<MemoryItemRow | null> {
+  return env.DB.prepare(
+    `SELECT ${memoryItemSelect}
+    FROM memory_items i
+    LEFT JOIN memory_decks d ON d.id = i.deck_id
+    WHERE i.id = ?1 AND i.user_id = ?2
+    LIMIT 1`,
+  ).bind(itemId, user.id).first<MemoryItemRow>();
+}
+
+async function handleMemoryDecks(env: Env, user: SessionUserRow): Promise<Response> {
+  const rows = await env.DB.prepare(
+    `SELECT
+      d.id,
+      d.name,
+      d.description,
+      COUNT(i.id) AS itemCount,
+      SUM(CASE WHEN i.next_review_at <= datetime('now') THEN 1 ELSE 0 END) AS dueCount,
+      d.created_at AS createdAt
+    FROM memory_decks d
+    LEFT JOIN memory_items i ON i.deck_id = d.id AND i.status = 'active'
+    WHERE d.user_id = ?1
+    GROUP BY d.id
+    ORDER BY d.created_at DESC
+    LIMIT 50`,
+  ).bind(user.id).all<MemoryDeckRow>();
+  return json({ decks: rows.results.map(publicMemoryDeck) });
+}
+
+async function handleCreateMemoryDeck(request: Request, env: Env, user: SessionUserRow): Promise<Response> {
+  const body = await readBody(request);
+  if (!body) return error("请求内容无效。", 400);
+  const name = normalizeMemoryText(readString(body, "name"), 40);
+  const description = normalizeMemoryText(readString(body, "description"), 160);
+  if (name.length < 2) return error("卡组名称至少需要 2 个字。", 400);
+
+  const deckId = await getOrCreateMemoryDeck(env, user, name, description);
+  const deck = await getMemoryDeckById(env, user, deckId);
+  return json({ deck: deck ? publicMemoryDeck(deck) : null }, 201);
+}
+
+async function handleMemoryItems(request: Request, env: Env, user: SessionUserRow): Promise<Response> {
+  const url = new URL(request.url);
+  const requestedLimit = Number(url.searchParams.get("limit") ?? "80");
+  const limit = Number.isInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 120) : 80;
+  const deckId = url.searchParams.get("deckId")?.trim();
+  const params: Array<string | number> = [user.id];
+  const conditions = ["i.user_id = ?", "i.status = 'active'"];
+  if (deckId) {
+    conditions.push("i.deck_id = ?");
+    params.push(deckId);
+  }
+  params.push(limit);
+
+  const rows = await env.DB.prepare(
+    `SELECT ${memoryItemSelect}
+    FROM memory_items i
+    LEFT JOIN memory_decks d ON d.id = i.deck_id
+    WHERE ${conditions.join(" AND ")}
+    ORDER BY i.created_at DESC, i.id DESC
+    LIMIT ?`,
+  ).bind(...params).all<MemoryItemRow>();
+  return json({ items: rows.results.map(publicMemoryItem) });
+}
+
+async function handleDueMemoryItems(request: Request, env: Env, user: SessionUserRow): Promise<Response> {
+  const url = new URL(request.url);
+  const requestedLimit = Number(url.searchParams.get("limit") ?? "20");
+  const limit = Number.isInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 60) : 20;
+  const rows = await env.DB.prepare(
+    `SELECT ${memoryItemSelect}
+    FROM memory_items i
+    LEFT JOIN memory_decks d ON d.id = i.deck_id
+    WHERE i.user_id = ?1 AND i.status = 'active' AND i.next_review_at <= datetime('now')
+    ORDER BY i.next_review_at ASC, i.created_at ASC
+    LIMIT ?2`,
+  ).bind(user.id, limit).all<MemoryItemRow>();
+  return json({ items: rows.results.map(publicMemoryItem), summary: await getMemorySummary(env, user) });
+}
+
+async function handleCreateMemoryItem(request: Request, env: Env, user: SessionUserRow): Promise<Response> {
+  const body = await readBody(request);
+  if (!body) return error("请求内容无效。", 400);
+  const prompt = normalizeMemoryText(readString(body, "prompt"), 180);
+  const answer = normalizeMemoryText(readString(body, "answer"), 1_000);
+  const category = normalizeMemoryCategory(readString(body, "category"));
+  const tags = readMemoryTags(body);
+  if (prompt.length < 2 || prompt.length > 180) return error("问题需要控制在 2 到 180 个字之间。", 400);
+  if (answer.length < 1 || answer.length > 1_000) return error("答案需要控制在 1 到 1000 个字之间。", 400);
+
+  const requestedDeckId = readString(body, "deckId");
+  let deckId = "";
+  if (requestedDeckId) {
+    const deck = await env.DB.prepare(
+      "SELECT id FROM memory_decks WHERE id = ?1 AND user_id = ?2 LIMIT 1",
+    ).bind(requestedDeckId, user.id).first<{ id: string }>();
+    if (!deck) return error("没有找到这个记忆卡组。", 404);
+    deckId = deck.id;
+  } else {
+    deckId = await getOrCreateMemoryDeck(env, user, readString(body, "deckName") || "默认卡片");
+  }
+
+  const id = crypto.randomUUID();
+  const now = sqlTimestamp(new Date());
+  await env.DB.prepare(
+    `INSERT INTO memory_items
+      (id, user_id, deck_id, prompt, answer, category, tags, next_review_at, created_at, updated_at)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?8)`,
+  ).bind(id, user.id, deckId, prompt, answer, category, tags, now).run();
+
+  const item = await getMemoryItemById(env, user, id);
+  return json({ item: item ? publicMemoryItem(item) : null, summary: await getMemorySummary(env, user) }, 201);
+}
+
+async function handleDeleteMemoryItem(itemId: string, env: Env, user: SessionUserRow): Promise<Response> {
+  const existing = await env.DB.prepare(
+    "SELECT id FROM memory_items WHERE id = ?1 AND user_id = ?2 AND status = 'active' LIMIT 1",
+  ).bind(itemId, user.id).first<{ id: string }>();
+  if (!existing) return error("没有找到可归档的记忆卡片。", 404);
+
+  await env.DB.prepare(
+    "UPDATE memory_items SET status = 'archived', updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND user_id = ?2",
+  ).bind(itemId, user.id).run();
+  return new Response(null, { status: 204, headers: apiHeaders });
+}
+
+async function handleMemoryReview(request: Request, env: Env, user: SessionUserRow): Promise<Response> {
+  const body = await readBody(request);
+  if (!body) return error("请求内容无效。", 400);
+  const itemId = readString(body, "itemId");
+  const rating = Number(body.rating);
+  if (!Number.isInteger(rating) || rating < 0 || rating > 3) return error("复习反馈无效。", 400);
+
+  const item = await getMemoryItemById(env, user, itemId);
+  if (!item || item.status !== "active") return error("没有找到这张记忆卡片。", 404);
+
+  const rawResponseMs = Number(body.responseMs);
+  const responseMs = Number.isInteger(rawResponseMs) && rawResponseMs >= 0 && rawResponseMs <= 600_000
+    ? rawResponseMs
+    : null;
+  let sessionId: string | null = readString(body, "sessionId") || null;
+  if (sessionId) {
+    const session = await env.DB.prepare(
+      "SELECT id FROM memory_sessions WHERE id = ?1 AND user_id = ?2 LIMIT 1",
+    ).bind(sessionId, user.id).first<{ id: string }>();
+    sessionId = session?.id ?? null;
+  }
+
+  const scheduled = scheduleMemoryReview(item, rating);
+  const reviewId = crypto.randomUUID();
+  const now = sqlTimestamp(new Date());
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO memory_reviews
+        (id, user_id, item_id, session_id, rating, response_ms, local_date, reviewed_at, next_review_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`,
+    ).bind(reviewId, user.id, item.id, sessionId, rating, responseMs, localDate(user.timezone), now, scheduled.nextReviewAt),
+    env.DB.prepare(
+      `UPDATE memory_items
+      SET ease_factor = ?1,
+        interval_days = ?2,
+        review_count = review_count + 1,
+        lapse_count = ?3,
+        next_review_at = ?4,
+        last_reviewed_at = ?5,
+        updated_at = ?5
+      WHERE id = ?6 AND user_id = ?7`,
+    ).bind(scheduled.easeFactor, scheduled.intervalDays, scheduled.lapseCount, scheduled.nextReviewAt, now, item.id, user.id),
+  ]);
+
+  const updatedItem = await getMemoryItemById(env, user, item.id);
+  return json({
+    review: { id: reviewId, rating, nextReviewAt: scheduled.nextReviewAt },
+    item: updatedItem ? publicMemoryItem(updatedItem) : null,
+    summary: await getMemorySummary(env, user),
+  }, 201);
+}
+
+async function handleMemorySessionComplete(request: Request, env: Env, user: SessionUserRow): Promise<Response> {
+  const body = await readBody(request);
+  if (!body) return error("请求内容无效。", 400);
+  const rawMode = normalizeMemoryCategory(readString(body, "mode"));
+  const mode = ["recall", "palace", "mixed"].includes(rawMode) ? rawMode : "recall";
+  const itemCount = clampInteger(Number(body.itemCount), 0, 200, 0);
+  const rememberedCount = clampInteger(Number(body.rememberedCount), 0, itemCount, 0);
+  const forgottenCount = clampInteger(Number(body.forgottenCount), 0, itemCount, 0);
+  const durationSec = clampInteger(Number(body.durationSec), 0, 7200, 0);
+  const clientSessionId = readString(body, "clientSessionId");
+  if (clientSessionId.length < 8 || clientSessionId.length > 120) return error("训练标识无效。", 400);
+
+  const existing = await env.DB.prepare(
+    `SELECT
+      id,
+      mode,
+      item_count AS itemCount,
+      remembered_count AS rememberedCount,
+      forgotten_count AS forgottenCount,
+      duration_sec AS durationSec,
+      local_date AS localDate,
+      created_at AS createdAt
+    FROM memory_sessions
+    WHERE user_id = ?1 AND client_session_id = ?2
+    LIMIT 1`,
+  ).bind(user.id, clientSessionId).first<MemorySessionRow>();
+  if (existing) return json({ session: existing, summary: await getMemorySummary(env, user) });
+
+  const id = crypto.randomUUID();
+  const date = localDate(user.timezone);
+  const now = sqlTimestamp(new Date());
+  await env.DB.prepare(
+    `INSERT INTO memory_sessions
+      (id, user_id, mode, item_count, remembered_count, forgotten_count, duration_sec, client_session_id, local_date, created_at)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`,
+  ).bind(id, user.id, mode, itemCount, rememberedCount, forgottenCount, durationSec, clientSessionId, date, now).run();
+
+  return json({
+    session: {
+      id,
+      mode,
+      itemCount,
+      rememberedCount,
+      forgottenCount,
+      durationSec,
+      localDate: date,
+      createdAt: now,
+    },
+    summary: await getMemorySummary(env, user),
+  }, 201);
+}
+
+async function getMemoryPalaceById(env: Env, user: SessionUserRow, palaceId: string): Promise<{ palace: MemoryPalaceRow; loci: MemoryLocusRow[] } | null> {
+  const palace = await env.DB.prepare(
+    `SELECT
+      p.id,
+      p.name,
+      p.scene_type AS sceneType,
+      COUNT(l.id) AS lociCount,
+      p.created_at AS createdAt
+    FROM memory_palaces p
+    LEFT JOIN memory_loci l ON l.palace_id = p.id
+    WHERE p.id = ?1 AND p.user_id = ?2
+    GROUP BY p.id
+    LIMIT 1`,
+  ).bind(palaceId, user.id).first<MemoryPalaceRow>();
+  if (!palace) return null;
+
+  const loci = await env.DB.prepare(
+    `SELECT
+      l.id,
+      l.palace_id AS palaceId,
+      l.title,
+      l.position_order AS positionOrder,
+      l.description,
+      l.item_id AS itemId,
+      i.prompt,
+      l.created_at AS createdAt
+    FROM memory_loci l
+    LEFT JOIN memory_items i ON i.id = l.item_id AND i.user_id = ?1
+    WHERE l.palace_id = ?2
+    ORDER BY l.position_order ASC, l.created_at ASC`,
+  ).bind(user.id, palace.id).all<MemoryLocusRow>();
+
+  return { palace, loci: loci.results };
+}
+
+async function handleMemoryPalaces(env: Env, user: SessionUserRow): Promise<Response> {
+  const palaceRows = await env.DB.prepare(
+    `SELECT
+      p.id,
+      p.name,
+      p.scene_type AS sceneType,
+      COUNT(l.id) AS lociCount,
+      p.created_at AS createdAt
+    FROM memory_palaces p
+    LEFT JOIN memory_loci l ON l.palace_id = p.id
+    WHERE p.user_id = ?1
+    GROUP BY p.id
+    ORDER BY p.created_at DESC
+    LIMIT 20`,
+  ).bind(user.id).all<MemoryPalaceRow>();
+
+  const palaces = palaceRows.results;
+  if (palaces.length === 0) return json({ palaces: [] });
+
+  const placeholders = palaces.map(() => "?").join(",");
+  const locusRows = await env.DB.prepare(
+    `SELECT
+      l.id,
+      l.palace_id AS palaceId,
+      l.title,
+      l.position_order AS positionOrder,
+      l.description,
+      l.item_id AS itemId,
+      i.prompt,
+      l.created_at AS createdAt
+    FROM memory_loci l
+    LEFT JOIN memory_items i ON i.id = l.item_id AND i.user_id = ?
+    WHERE l.palace_id IN (${placeholders})
+    ORDER BY l.position_order ASC, l.created_at ASC`,
+  ).bind(user.id, ...palaces.map((palace) => palace.id)).all<MemoryLocusRow>();
+
+  const lociByPalace = new Map<string, MemoryLocusRow[]>();
+  for (const locus of locusRows.results) {
+    if (!locus.palaceId) continue;
+    const items = lociByPalace.get(locus.palaceId) ?? [];
+    items.push(locus);
+    lociByPalace.set(locus.palaceId, items);
+  }
+
+  return json({
+    palaces: palaces.map((palace) => publicMemoryPalace(palace, lociByPalace.get(palace.id) ?? [])),
+  });
+}
+
+async function handleCreateMemoryPalace(request: Request, env: Env, user: SessionUserRow): Promise<Response> {
+  const body = await readBody(request);
+  if (!body) return error("请求内容无效。", 400);
+  const name = normalizeMemoryText(readString(body, "name"), 40);
+  if (name.length < 2) return error("宫殿名称至少需要 2 个字。", 400);
+  const sceneType = normalizeMemorySceneType(readString(body, "sceneType"));
+  const useTemplate = body.useTemplate !== false;
+  const id = crypto.randomUUID();
+
+  const statements = [
+    env.DB.prepare(
+      "INSERT INTO memory_palaces (id, user_id, name, scene_type) VALUES (?1, ?2, ?3, ?4)",
+    ).bind(id, user.id, name, sceneType),
+  ];
+  if (useTemplate) {
+    for (const [index, [title, description]] of (palaceTemplates[sceneType] ?? palaceTemplates.home).entries()) {
+      statements.push(env.DB.prepare(
+        "INSERT INTO memory_loci (id, palace_id, title, position_order, description) VALUES (?1, ?2, ?3, ?4, ?5)",
+      ).bind(crypto.randomUUID(), id, title, index + 1, description));
+    }
+  }
+  await env.DB.batch(statements);
+
+  const palace = await getMemoryPalaceById(env, user, id);
+  return json({ palace: palace ? publicMemoryPalace(palace.palace, palace.loci) : null }, 201);
+}
+
+async function handleCreateMemoryLocus(palaceId: string, request: Request, env: Env, user: SessionUserRow): Promise<Response> {
+  const palace = await env.DB.prepare(
+    "SELECT id FROM memory_palaces WHERE id = ?1 AND user_id = ?2 LIMIT 1",
+  ).bind(palaceId, user.id).first<{ id: string }>();
+  if (!palace) return error("没有找到这个记忆宫殿。", 404);
+
+  const body = await readBody(request);
+  if (!body) return error("请求内容无效。", 400);
+  const title = normalizeMemoryText(readString(body, "title"), 40);
+  const description = normalizeMemoryText(readString(body, "description"), 240);
+  if (title.length < 1) return error("地点名称不能为空。", 400);
+
+  let itemId: string | null = readString(body, "itemId") || null;
+  if (itemId) {
+    const item = await env.DB.prepare(
+      "SELECT id FROM memory_items WHERE id = ?1 AND user_id = ?2 AND status = 'active' LIMIT 1",
+    ).bind(itemId, user.id).first<{ id: string }>();
+    itemId = item?.id ?? null;
+    if (!itemId) return error("没有找到可绑定的记忆卡片。", 404);
+  }
+
+  const maxOrder = await env.DB.prepare(
+    "SELECT MAX(position_order) AS maxOrder FROM memory_loci WHERE palace_id = ?1",
+  ).bind(palaceId).first<{ maxOrder: number | null }>();
+  const requestedOrder = Number(body.positionOrder);
+  const positionOrder = Number.isInteger(requestedOrder) && requestedOrder > 0
+    ? Math.min(requestedOrder, 999)
+    : Number(maxOrder?.maxOrder ?? 0) + 1;
+
+  const id = crypto.randomUUID();
+  await env.DB.prepare(
+    "INSERT INTO memory_loci (id, palace_id, title, position_order, description, item_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+  ).bind(id, palaceId, title, positionOrder, description || null, itemId).run();
+
+  const locus = await env.DB.prepare(
+    `SELECT
+      l.id,
+      l.palace_id AS palaceId,
+      l.title,
+      l.position_order AS positionOrder,
+      l.description,
+      l.item_id AS itemId,
+      i.prompt,
+      l.created_at AS createdAt
+    FROM memory_loci l
+    LEFT JOIN memory_items i ON i.id = l.item_id AND i.user_id = ?1
+    WHERE l.id = ?2
+    LIMIT 1`,
+  ).bind(user.id, id).first<MemoryLocusRow>();
+  return json({ locus: locus ? publicMemoryPalace({ id: palaceId, name: "", sceneType: "home", lociCount: 1, createdAt: "" }, [locus]).loci[0] : null }, 201);
 }
 
 function trimBinding(value: string | undefined): string {
@@ -1243,6 +1978,27 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (!user) return error("请先登录。", 401);
   if (method === "POST" && path === "/api/assets/upload") return handleUploadAsset(request, env, user);
   if (method === "GET" && path === "/api/nutrition/images") return handleNutritionImages(env, user);
+  if (method === "GET" && path === "/api/memory/summary") return json(await getMemorySummary(env, user));
+  if (method === "GET" && path === "/api/memory/decks") return handleMemoryDecks(env, user);
+  if (method === "POST" && path === "/api/memory/decks") return handleCreateMemoryDeck(request, env, user);
+  if (method === "GET" && path === "/api/memory/items") return handleMemoryItems(request, env, user);
+  if (method === "GET" && path === "/api/memory/items/due") return handleDueMemoryItems(request, env, user);
+  if (method === "POST" && path === "/api/memory/items") return handleCreateMemoryItem(request, env, user);
+  if (method === "POST" && path === "/api/memory/reviews") return handleMemoryReview(request, env, user);
+  if (method === "POST" && path === "/api/memory/sessions/complete") return handleMemorySessionComplete(request, env, user);
+  if (method === "GET" && path === "/api/memory/palaces") return handleMemoryPalaces(env, user);
+  if (method === "POST" && path === "/api/memory/palaces") return handleCreateMemoryPalace(request, env, user);
+
+  const memoryItemMatch = path.match(/^\/api\/memory\/items\/([a-zA-Z0-9-]+)$/);
+  if (method === "DELETE" && memoryItemMatch?.[1]) {
+    return handleDeleteMemoryItem(memoryItemMatch[1], env, user);
+  }
+
+  const memoryLociMatch = path.match(/^\/api\/memory\/palaces\/([a-zA-Z0-9-]+)\/loci$/);
+  if (method === "POST" && memoryLociMatch?.[1]) {
+    return handleCreateMemoryLocus(memoryLociMatch[1], request, env, user);
+  }
+
   if (method === "POST" && path === "/api/training/complete") return handleTrainingComplete(request, env, user);
   if (method === "GET" && path === "/api/checkins") return handleCheckins(env, user);
   if (method === "POST" && path === "/api/community/posts") return handlePublish(request, env, user);

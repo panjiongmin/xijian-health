@@ -65,6 +65,9 @@ export function HomePage() {
             <Link className="secondary-button" to="/discover">
               了解训练
             </Link>
+            <Link className="secondary-button" to="/memory">
+              记忆训练
+            </Link>
           </div>
         </div>
         <div className="hero-visual">

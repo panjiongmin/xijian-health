@@ -4,6 +4,7 @@ import { AuthPage } from "./pages/AuthPage";
 import { CommunityPage } from "./pages/CommunityPage";
 import { DiscoverPage } from "./pages/DiscoverPage";
 import { HomePage } from "./pages/HomePage";
+import { MemoryPage } from "./pages/MemoryPage";
 import { MePage } from "./pages/MePage";
 import { NutritionPage } from "./pages/NutritionPage";
 import { RecordsPage } from "./pages/RecordsPage";
@@ -15,6 +16,7 @@ export default function App() {
       <Route element={<AppLayout />}>
         <Route index element={<HomePage />} />
         <Route path="train" element={<TrainPage />} />
+        <Route path="memory" element={<MemoryPage />} />
         <Route path="community" element={<CommunityPage />} />
         <Route path="records" element={<RecordsPage />} />
         <Route path="discover" element={<DiscoverPage />} />

@@ -1,6 +1,7 @@
 import {
   Armchair,
   ArrowRight,
+  Brain,
   ForkKnife,
   Eye,
   MoonStars,
@@ -34,6 +35,12 @@ export function DiscoverPage() {
           <p>跟随简单节拍，留下一小段安静。</p>
           <span>即将开放</span>
         </article>
+        <Link className="module-coming memory-module" to="/memory">
+          <Brain weight="duotone" />
+          <h2>记忆力训练</h2>
+          <p>主动回忆、间隔复习和记忆宫殿，先从一张高质量卡片开始。</p>
+          <span>开始训练 <ArrowRight /></span>
+        </Link>
         <article className="module-coming">
           <PersonSimpleTaiChi weight="duotone" />
           <h2>颈肩舒展</h2>
