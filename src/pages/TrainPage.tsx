@@ -42,6 +42,7 @@ const DEFAULT_TRAINING_PREFERENCE: TrainingPreference = {
 };
 
 const TRAINING_PREFERENCE_KEY = "xijian-training-preference";
+const TTS_VOICE_VERSION = "x6_wuyediantai_mini";
 const CYCLE_SECONDS_MIN = 1;
 const CYCLE_SECONDS_MAX = 20;
 const MIN_SCALE_MIN = 0.2;
@@ -236,10 +237,13 @@ export function TrainPage() {
     cancelSpeech();
     const requestId = speechRequestRef.current;
     try {
-      const response = await fetch(`/api/tts/training?phase=${encodeURIComponent(trainingPhase)}`, {
-        credentials: "include",
-        headers: { Accept: "audio/mpeg" },
-      });
+      const response = await fetch(
+        `/api/tts/training?phase=${encodeURIComponent(trainingPhase)}&voice=${encodeURIComponent(TTS_VOICE_VERSION)}`,
+        {
+          credentials: "include",
+          headers: { Accept: "audio/mpeg" },
+        },
+      );
       if (!response.ok) throw new Error("tts unavailable");
       const audioBytes = await response.arrayBuffer();
       if (speechRequestRef.current !== requestId) return;

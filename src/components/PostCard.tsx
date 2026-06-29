@@ -8,6 +8,7 @@ import {
 } from "@phosphor-icons/react";
 import type { FormEvent } from "react";
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { ApiError, apiRequest } from "../api";
 import { useAuth } from "../auth-context";
@@ -62,6 +63,15 @@ export function PostCard({ post, onEncouragementChange }: PostCardProps) {
     setCommentsError("");
     setCommentText("");
   }, [post.id, post.commentCount]);
+
+  useEffect(() => {
+    if (!commentsOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [commentsOpen]);
 
   const toggleEncouragement = async () => {
     if (!user) {
@@ -205,7 +215,7 @@ export function PostCard({ post, onEncouragementChange }: PostCardProps) {
         </button>
       </footer>
 
-      {commentsOpen && (
+      {commentsOpen && createPortal(
         <div className="comment-drawer-backdrop" onClick={() => setCommentsOpen(false)}>
           <section
             className="comment-drawer"
@@ -286,7 +296,8 @@ export function PostCard({ post, onEncouragementChange }: PostCardProps) {
               </div>
             </form>
           </section>
-        </div>
+        </div>,
+        document.body,
       )}
     </article>
   );

@@ -139,7 +139,7 @@ const apiHeaders = {
 };
 
 const audioHeaders = {
-  "Cache-Control": `public, max-age=${XFYUN_TTS_CACHE_SECONDS}`,
+  "Cache-Control": "private, max-age=0, must-revalidate",
   "Content-Type": "audio/mpeg",
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "strict-origin-when-cross-origin",
@@ -810,7 +810,7 @@ async function handleTrainingSpeech(request: Request, env: Env): Promise<Respons
   const cached = await env.ASSETS_BUCKET.get(key);
   if (cached?.body) {
     return new Response(cached.body, {
-      headers: { ...audioHeaders, "X-TTS-Cache": "HIT" },
+      headers: { ...audioHeaders, "X-TTS-Cache": "HIT", "X-TTS-Voice": config.voice },
     });
   }
 
@@ -839,7 +839,7 @@ async function handleTrainingSpeech(request: Request, env: Env): Promise<Respons
   });
 
   return new Response(audio, {
-    headers: { ...audioHeaders, "X-TTS-Cache": "MISS" },
+    headers: { ...audioHeaders, "X-TTS-Cache": "MISS", "X-TTS-Voice": config.voice },
   });
 }
 

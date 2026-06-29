@@ -3,17 +3,32 @@ import {
   Compass,
   Eye,
   House,
-  Moon,
+  Palette,
   PlayCircle,
-  Sun,
   UserCircle,
   UsersThree,
 } from "@phosphor-icons/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, NavLink, Outlet } from "react-router-dom";
 import { useAuth } from "../auth-context";
 
-type Theme = "light" | "dark";
+type Theme = "songhua" | "tianqing" | "cangjia" | "haitang" | "qingdai";
+
+const themes: Array<{ key: Theme; label: string; note: string; color: string }> = [
+  { key: "songhua", label: "松花", note: "清润护眼", color: "#2f6b4f" },
+  { key: "tianqing", label: "天青", note: "雨后清蓝", color: "#2f6f8f" },
+  { key: "cangjia", label: "苍葭", note: "芦苇浅绿", color: "#6f805d" },
+  { key: "haitang", label: "海棠", note: "柔粉暖调", color: "#9d5b6b" },
+  { key: "qingdai", label: "青黛", note: "夜间低亮", color: "#6f7fa8" },
+];
+
+function resolveStoredTheme(): Theme {
+  const stored = localStorage.getItem("xijian-theme");
+  if (themes.some((item) => item.key === stored)) return stored as Theme;
+  if (stored === "dark") return "qingdai";
+  if (stored === "light") return "songhua";
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "qingdai" : "songhua";
+}
 
 const mainLinks = [
   { to: "/", label: "首页", icon: House },
@@ -25,18 +40,32 @@ const mainLinks = [
 
 export function AppLayout() {
   const { user, loading } = useAuth();
-  const [theme, setTheme] = useState<Theme>(() => {
-    const stored = localStorage.getItem("xijian-theme");
-    if (stored === "light" || stored === "dark") return stored;
-    return window.matchMedia("(prefers-color-scheme: dark)").matches
-      ? "dark"
-      : "light";
-  });
+  const [theme, setTheme] = useState<Theme>(() => resolveStoredTheme());
+  const [themeMenuOpen, setThemeMenuOpen] = useState(false);
+  const themeMenuRef = useRef<HTMLDivElement | null>(null);
+  const activeTheme = themes.find((item) => item.key === theme) ?? themes[0];
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("xijian-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    if (!themeMenuOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (themeMenuRef.current?.contains(event.target as Node)) return;
+      setThemeMenuOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setThemeMenuOpen(false);
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [themeMenuOpen]);
 
   return (
     <div className="app-shell">
@@ -58,14 +87,46 @@ export function AppLayout() {
           </nav>
 
           <div className="header-actions">
-            <button
-              type="button"
-              className="icon-button"
-              aria-label={theme === "light" ? "切换深色模式" : "切换浅色模式"}
-              onClick={() => setTheme((value) => (value === "light" ? "dark" : "light"))}
-            >
-              {theme === "light" ? <Moon /> : <Sun />}
-            </button>
+            <div className="theme-switcher" ref={themeMenuRef}>
+              <button
+                type="button"
+                className="theme-trigger"
+                aria-label={`切换主题色，当前为${activeTheme.label}`}
+                aria-expanded={themeMenuOpen}
+                onClick={() => setThemeMenuOpen((value) => !value)}
+              >
+                <span className="theme-trigger-swatch" style={{ background: activeTheme.color }} aria-hidden="true" />
+                <Palette />
+                <span className="theme-trigger-label">{activeTheme.label}</span>
+              </button>
+              {themeMenuOpen && (
+                <div className="theme-menu" role="menu" aria-label="中国色主题">
+                  <div className="theme-menu-heading">
+                    <strong>中国色主题</strong>
+                    <span>取意 zhongguose.com</span>
+                  </div>
+                  {themes.map((item) => (
+                    <button
+                      key={item.key}
+                      type="button"
+                      className={item.key === theme ? "active" : ""}
+                      onClick={() => {
+                        setTheme(item.key);
+                        setThemeMenuOpen(false);
+                      }}
+                      role="menuitemradio"
+                      aria-checked={item.key === theme}
+                    >
+                      <span className="theme-option-swatch" style={{ background: item.color }} aria-hidden="true" />
+                      <span>
+                        <strong>{item.label}</strong>
+                        <small>{item.note}</small>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             {!loading &&
               (user ? (
                 <Link className="profile-link" to="/me">
