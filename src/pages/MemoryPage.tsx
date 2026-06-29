@@ -19,6 +19,7 @@ import { apiRequest } from "../api";
 import { useAuth } from "../auth-context";
 import type {
   MemoryDeck,
+  MemoryCardDraft,
   MemoryItem,
   MemoryPalace,
   MemorySessionResult,
@@ -124,6 +125,12 @@ export function MemoryPage() {
   const [savingCard, setSavingCard] = useState(false);
   const [savingPalace, setSavingPalace] = useState(false);
   const [savingLocusId, setSavingLocusId] = useState("");
+  const [generatingDrafts, setGeneratingDrafts] = useState(false);
+  const [savingDrafts, setSavingDrafts] = useState(false);
+  const [aiSource, setAiSource] = useState("");
+  const [aiDrafts, setAiDrafts] = useState<MemoryCardDraft[]>([]);
+  const [generatingPalaceId, setGeneratingPalaceId] = useState("");
+  const [palacePreferences, setPalacePreferences] = useState<Record<string, string>>({});
   const [cardForm, setCardForm] = useState<CardForm>({
     deckName: "默认卡片",
     prompt: "",
@@ -202,6 +209,96 @@ export function MemoryPage() {
       setError("卡片没有保存成功，请检查问题和答案。");
     } finally {
       setSavingCard(false);
+    }
+  };
+
+  const saveDraftCard = async (draft: MemoryCardDraft) => {
+    if (savingDrafts) return;
+    setSavingDrafts(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await apiRequest<{ item: MemoryItem | null; summary: MemorySummary }>("/api/memory/items", {
+        method: "POST",
+        body: JSON.stringify({
+          deckName: cardForm.deckName || "AI 卡片",
+          prompt: draft.prompt,
+          answer: draft.answer,
+          category: cardForm.category,
+          tags: draft.tags.join(","),
+        }),
+      });
+      if (result.item) {
+        setItems((value) => [result.item as MemoryItem, ...value]);
+        setDueItems((value) => [result.item as MemoryItem, ...value]);
+      }
+      setSummary(result.summary);
+      setAiDrafts((value) => value.filter((item) => item.prompt !== draft.prompt));
+      setNotice("AI 卡片已保存并进入今日复习。");
+    } catch {
+      setError("这张 AI 卡片暂时没有保存成功。");
+    } finally {
+      setSavingDrafts(false);
+    }
+  };
+
+  const saveAllDraftCards = async () => {
+    if (aiDrafts.length === 0 || savingDrafts) return;
+    setSavingDrafts(true);
+    setError("");
+    setNotice("");
+    try {
+      const created: MemoryItem[] = [];
+      let nextSummary = summary;
+      for (const draft of aiDrafts) {
+        const result = await apiRequest<{ item: MemoryItem | null; summary: MemorySummary }>("/api/memory/items", {
+          method: "POST",
+          body: JSON.stringify({
+            deckName: cardForm.deckName || "AI 卡片",
+            prompt: draft.prompt,
+            answer: draft.answer,
+            category: cardForm.category,
+            tags: draft.tags.join(","),
+          }),
+        });
+        if (result.item) created.push(result.item);
+        nextSummary = result.summary;
+      }
+      if (created.length > 0) {
+        setItems((value) => [...created, ...value]);
+        setDueItems((value) => [...created, ...value]);
+      }
+      setSummary(nextSummary);
+      setAiDrafts([]);
+      setNotice(`已保存 ${created.length} 张 AI 卡片。`);
+      void loadMemory();
+    } catch {
+      setError("部分 AI 卡片没有保存成功，请稍后再试。");
+    } finally {
+      setSavingDrafts(false);
+    }
+  };
+
+  const generateDraftCards = async () => {
+    if (generatingDrafts) return;
+    setGeneratingDrafts(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await apiRequest<{ drafts: MemoryCardDraft[] }>("/api/memory/ai/card-drafts", {
+        method: "POST",
+        body: JSON.stringify({
+          source: aiSource,
+          count: 5,
+          category: cardForm.category,
+        }),
+      });
+      setAiDrafts(result.drafts);
+      setNotice("AI 已提炼出一组主动回忆卡片。");
+    } catch {
+      setError("AI 卡片暂时没有生成成功，请确认 API Key 已配置，或换一段更清晰的材料。");
+    } finally {
+      setGeneratingDrafts(false);
     }
   };
 
@@ -353,6 +450,31 @@ export function MemoryPage() {
     }
   };
 
+  const updatePalacePreference = (palaceId: string, value: string) => {
+    setPalacePreferences((items) => ({ ...items, [palaceId]: value }));
+  };
+
+  const generatePalaceView = async (palaceId: string) => {
+    if (generatingPalaceId) return;
+    setGeneratingPalaceId(palaceId);
+    setError("");
+    setNotice("");
+    try {
+      const result = await apiRequest<{ palace: MemoryPalace | null }>(`/api/memory/palaces/${palaceId}/generate-view`, {
+        method: "POST",
+        body: JSON.stringify({ preference: palacePreferences[palaceId] ?? "" }),
+      });
+      if (result.palace) {
+        setPalaces((value) => value.map((palace) => palace.id === palaceId ? result.palace as MemoryPalace : palace));
+      }
+      setNotice("记忆宫殿空间视图已生成，并保存到 R2。");
+    } catch {
+      setError("空间视图暂时没有生成成功，请确认火山方舟 API Key 与模型权限。");
+    } finally {
+      setGeneratingPalaceId("");
+    }
+  };
+
   if (authLoading) return <div className="page-loading" />;
 
   if (!user) {
@@ -487,6 +609,66 @@ export function MemoryPage() {
           <h3>位置法</h3>
           <p>把抽象内容绑定到熟悉地点，适合顺序、演讲、清单和复杂概念。</p>
         </article>
+      </section>
+
+      <section className="memory-ai-panel">
+        <div className="memory-ai-copy">
+          <Sparkle weight="duotone" />
+          <div>
+            <span className="eyebrow">AI 文字生成</span>
+            <h2>把一段材料提炼成主动回忆卡片</h2>
+            <p>粘贴文章、课程笔记或自己的摘录，AI 会尽量只基于原文生成可复述的问题和答案。</p>
+          </div>
+        </div>
+        <div className="memory-ai-input">
+          <textarea
+            value={aiSource}
+            onChange={(event) => setAiSource(event.target.value)}
+            placeholder="例如：粘贴一段关于间隔复习、睡眠、饮食或课程知识的材料……"
+            maxLength={4000}
+          />
+          <div className="memory-ai-actions">
+            <span>{aiSource.length} / 4000</span>
+            <button type="button" className="primary-button" onClick={() => void generateDraftCards()} disabled={generatingDrafts || aiSource.trim().length < 20}>
+              {generatingDrafts ? "生成中" : "AI 提炼卡片"}
+            </button>
+          </div>
+          {aiDrafts.length > 0 && (
+            <div className="ai-draft-list">
+              <div className="ai-draft-heading">
+                <strong>生成草稿</strong>
+                <button type="button" onClick={() => void saveAllDraftCards()} disabled={savingDrafts}>
+                  全部保存
+                </button>
+              </div>
+              {aiDrafts.map((draft) => (
+                <article key={draft.prompt}>
+                  <div>
+                    <h3>{draft.prompt}</h3>
+                    <p>{draft.answer}</p>
+                    {draft.tags.length > 0 && <span>{draft.tags.join(" · ")}</span>}
+                  </div>
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => setCardForm((value) => ({
+                        ...value,
+                        prompt: draft.prompt,
+                        answer: draft.answer,
+                        tags: draft.tags.join(","),
+                      }))}
+                    >
+                      放入表单
+                    </button>
+                    <button type="button" onClick={() => void saveDraftCard(draft)} disabled={savingDrafts}>
+                      保存
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </div>
       </section>
 
       <section className="memory-workspace">
@@ -639,6 +821,39 @@ export function MemoryPage() {
                       <h3>{palace.name}</h3>
                     </div>
                     <strong>{palace.lociCount} 点</strong>
+                  </div>
+                  <div className={`palace-visual ${palace.imageUrl ? "" : "empty"}`}>
+                    {palace.imageUrl ? (
+                      <>
+                        <img src={palace.imageUrl} alt={`${palace.name} 空间视图`} loading="lazy" decoding="async" />
+                        {palace.layout?.points.map((point, index) => (
+                          <button
+                            key={`${point.locusId ?? point.title}-${index}`}
+                            type="button"
+                            className="palace-point"
+                            style={{ left: `${point.x}%`, top: `${point.y}%` }}
+                            title={point.hint || point.title}
+                          >
+                            {index + 1}
+                          </button>
+                        ))}
+                      </>
+                    ) : (
+                      <div>
+                        <Sparkle weight="duotone" />
+                        <p>还没有空间化视图。生成后会保存到 R2，并在这里叠加可点击路径点。</p>
+                      </div>
+                    )}
+                  </div>
+                  <div className="palace-generate-row">
+                    <input
+                      placeholder="空间风格偏好，可选：如书房、庭院、山间小屋"
+                      value={palacePreferences[palace.id] ?? ""}
+                      onChange={(event) => updatePalacePreference(palace.id, event.target.value)}
+                    />
+                    <button type="button" onClick={() => void generatePalaceView(palace.id)} disabled={generatingPalaceId === palace.id || palace.loci.length === 0}>
+                      {generatingPalaceId === palace.id ? "生成中" : palace.imageUrl ? "重新生成空间图" : "生成空间图"}
+                    </button>
                   </div>
                   <ol className="loci-list">
                     {palace.loci.map((locus) => (

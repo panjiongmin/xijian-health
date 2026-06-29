@@ -135,11 +135,35 @@ export type MemoryLocus = {
   createdAt: string;
 };
 
+export type MemoryPalaceLayout = {
+  viewpoint: string;
+  palette: string[];
+  style: string;
+  points: Array<{
+    locusId: string | null;
+    title: string;
+    x: number;
+    y: number;
+    hint: string;
+  }>;
+};
+
 export type MemoryPalace = {
   id: string;
   name: string;
   sceneType: string;
   lociCount: number;
+  imageUrl: string | null;
+  imagePrompt: string | null;
+  imageModel: string | null;
+  layout: MemoryPalaceLayout | null;
+  generatedAt: string | null;
   createdAt: string;
   loci: MemoryLocus[];
+};
+
+export type MemoryCardDraft = {
+  prompt: string;
+  answer: string;
+  tags: string[];
 };

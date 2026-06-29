@@ -12,6 +12,13 @@ const XFYUN_TTS_TIMEOUT_MS = 15_000;
 const XFYUN_TTS_MAX_AUDIO_BYTES = 1_200_000;
 const XFYUN_TTS_CACHE_SECONDS = 60 * 60 * 24 * 30;
 const MAX_IMAGE_UPLOAD_BYTES = 4 * 1024 * 1024;
+const ARK_DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3";
+const ARK_DEFAULT_IMAGE_MODEL = "doubao-seedream-5-0-260128";
+const ARK_DEFAULT_CHAT_MODEL = "doubao-seed-character-260628";
+const ARK_DEFAULT_IMAGE_SIZE = "2K";
+const ARK_TIMEOUT_MS = 65_000;
+const ARK_MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+const MAX_AI_SOURCE_LENGTH = 4_000;
 
 type JsonObject = Record<string, unknown>;
 
@@ -111,6 +118,11 @@ type MemoryPalaceRow = {
   name: string;
   sceneType: string;
   lociCount: number;
+  imageKey: string | null;
+  imagePrompt: string | null;
+  imageModel: string | null;
+  layoutJson: string | null;
+  generatedAt: string | null;
   createdAt: string;
 };
 
@@ -145,6 +157,43 @@ type MemorySessionRow = {
   durationSec: number;
   localDate: string;
   createdAt: string;
+};
+
+type ArkBindings = {
+  ARK_API_KEY?: string;
+  ARK_BASE_URL?: string;
+  ARK_IMAGE_MODEL?: string;
+  ARK_CHAT_MODEL?: string;
+  ARK_IMAGE_SIZE?: string;
+};
+
+type ArkConfig = {
+  apiKey: string;
+  baseUrl: string;
+  imageModel: string;
+  chatModel: string;
+  imageSize: string;
+};
+
+type MemoryLayoutPoint = {
+  locusId: string | null;
+  title: string;
+  x: number;
+  y: number;
+  hint: string;
+};
+
+type MemoryPalaceLayout = {
+  viewpoint: string;
+  palette: string[];
+  style: string;
+  points: MemoryLayoutPoint[];
+};
+
+type MemoryCardDraft = {
+  prompt: string;
+  answer: string;
+  tags: string[];
 };
 
 type Summary = {
@@ -292,6 +341,58 @@ function parseMemoryTags(value: string | null): string[] {
   } catch {
     return [];
   }
+}
+
+function parseJsonObject(value: string): JsonObject | null {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return asObject(parsed);
+  } catch {
+    const fenced = value.replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
+    const start = fenced.indexOf("{");
+    const end = fenced.lastIndexOf("}");
+    if (start < 0 || end <= start) return null;
+    try {
+      return asObject(JSON.parse(fenced.slice(start, end + 1)) as unknown);
+    } catch {
+      return null;
+    }
+  }
+}
+
+function parseMemoryLayout(value: string | null): MemoryPalaceLayout | null {
+  if (!value) return null;
+  const parsed = parseJsonObject(value);
+  if (!parsed) return null;
+  const rawPoints = Array.isArray(parsed.points) ? parsed.points : [];
+  const points = rawPoints
+    .map((item): MemoryLayoutPoint | null => {
+      const object = asObject(item);
+      if (!object) return null;
+      const title = typeof object.title === "string" ? normalizeMemoryText(object.title, 40) : "";
+      if (!title) return null;
+      const x = clampInteger(Math.round(Number(object.x)), 4, 96, 50);
+      const y = clampInteger(Math.round(Number(object.y)), 4, 96, 50);
+      return {
+        locusId: typeof object.locusId === "string" ? object.locusId : null,
+        title,
+        x,
+        y,
+        hint: typeof object.hint === "string" ? normalizeMemoryText(object.hint, 80) : "",
+      };
+    })
+    .filter((item): item is MemoryLayoutPoint => Boolean(item))
+    .slice(0, 12);
+
+  const palette = Array.isArray(parsed.palette)
+    ? parsed.palette.filter((item): item is string => typeof item === "string").slice(0, 6)
+    : [];
+  return {
+    viewpoint: typeof parsed.viewpoint === "string" ? normalizeMemoryText(parsed.viewpoint, 60) : "2.5D isometric",
+    palette,
+    style: typeof parsed.style === "string" ? normalizeMemoryText(parsed.style, 120) : "calm wellness memory palace",
+    points,
+  };
 }
 
 function clampInteger(value: number, min: number, max: number, fallback: number): number {
@@ -629,12 +730,27 @@ function publicMemoryDeck(row: MemoryDeckRow) {
 
 function publicMemoryPalace(row: MemoryPalaceRow, loci: MemoryLocusRow[] = []) {
   return {
-    ...row,
+    id: row.id,
+    name: row.name,
+    sceneType: row.sceneType,
     lociCount: Number(row.lociCount),
+    imageUrl: assetUrl(row.imageKey),
+    imagePrompt: row.imagePrompt,
+    imageModel: row.imageModel,
+    layout: parseMemoryLayout(row.layoutJson),
+    generatedAt: row.generatedAt,
+    createdAt: row.createdAt,
     loci: loci.map((locus) => ({
       ...locus,
       positionOrder: Number(locus.positionOrder),
     })),
+  };
+}
+
+function publicMemoryLocus(locus: MemoryLocusRow) {
+  return {
+    ...locus,
+    positionOrder: Number(locus.positionOrder),
   };
 }
 
@@ -653,7 +769,8 @@ async function getOrCreateMemoryDeck(env: Env, user: SessionUserRow, name: strin
 }
 
 function validateAssetKey(key: string): boolean {
-  return /^uploads\/(avatar|community|nutrition)\/[a-zA-Z0-9-]+\/[a-zA-Z0-9-]+\.(jpe?g|png|webp|gif)$/.test(key);
+  return /^uploads\/(avatar|community|nutrition)\/[a-zA-Z0-9-]+\/[a-zA-Z0-9-]+\.(jpe?g|png|webp|gif)$/.test(key)
+    || /^generated\/memory\/[a-zA-Z0-9-]+\/[a-zA-Z0-9-]+\.(jpe?g|png|webp)$/.test(key);
 }
 
 function imageExtension(contentType: string): string | null {
@@ -782,6 +899,395 @@ async function handleNutritionImages(env: Env, user: SessionUserRow): Promise<Re
     LIMIT 24`,
   ).bind(user.id).all<AssetRow>();
   return json({ images: rows.results.map(publicAsset) });
+}
+
+function getArkConfig(env: Env): ArkConfig | null {
+  const bindings = env as Env & ArkBindings;
+  const apiKey = trimBinding(bindings.ARK_API_KEY);
+  if (!apiKey) return null;
+  return {
+    apiKey,
+    baseUrl: trimBinding(bindings.ARK_BASE_URL) || ARK_DEFAULT_BASE_URL,
+    imageModel: trimBinding(bindings.ARK_IMAGE_MODEL) || ARK_DEFAULT_IMAGE_MODEL,
+    chatModel: trimBinding(bindings.ARK_CHAT_MODEL) || ARK_DEFAULT_CHAT_MODEL,
+    imageSize: trimBinding(bindings.ARK_IMAGE_SIZE) || ARK_DEFAULT_IMAGE_SIZE,
+  };
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = ARK_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort("timeout"), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function callArkJson(config: ArkConfig, path: string, body: JsonObject): Promise<JsonObject> {
+  const response = await fetchWithTimeout(`${config.baseUrl.replace(/\/+$/g, "")}${path}`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${config.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await response.text();
+  const parsed = parseJsonObject(text);
+  if (!response.ok) {
+    const message = typeof parsed?.message === "string"
+      ? parsed.message
+      : typeof parsed?.error === "string"
+        ? parsed.error
+        : `ark request failed with ${response.status}`;
+    throw new Error(message);
+  }
+  if (!parsed) throw new Error("ark response is not json");
+  return parsed;
+}
+
+function readArkChatContent(response: JsonObject): string {
+  const choices = Array.isArray(response.choices) ? response.choices : [];
+  const firstChoice = asObject(choices[0]);
+  const message = asObject(firstChoice?.message);
+  const content = message?.content;
+  if (typeof content === "string") return content.trim();
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        const object = asObject(part);
+        return typeof object?.text === "string" ? object.text : "";
+      })
+      .join("")
+      .trim();
+  }
+  return "";
+}
+
+async function callArkChat(config: ArkConfig, system: string, user: string): Promise<string> {
+  const response = await callArkJson(config, "/chat/completions", {
+    model: config.chatModel,
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ],
+  });
+  const content = readArkChatContent(response);
+  if (!content) throw new Error("ark chat returned empty content");
+  return content;
+}
+
+function readArkImageUrl(response: JsonObject): string {
+  const data = Array.isArray(response.data) ? response.data : [];
+  const first = asObject(data[0]);
+  const url = typeof first?.url === "string" ? first.url : "";
+  if (!/^https:\/\//i.test(url)) throw new Error("ark image response has no url");
+  return url;
+}
+
+async function callArkImage(config: ArkConfig, prompt: string): Promise<string> {
+  const response = await callArkJson(config, "/images/generations", {
+    model: config.imageModel,
+    prompt,
+    sequential_image_generation: "disabled",
+    response_format: "url",
+    size: config.imageSize,
+    stream: false,
+    watermark: true,
+  });
+  return readArkImageUrl(response);
+}
+
+async function storeGeneratedImageFromUrl(env: Env, user: SessionUserRow, imageUrl: string): Promise<{ key: string; contentType: string; byteSize: number }> {
+  const response = await fetchWithTimeout(imageUrl, { method: "GET" }, ARK_TIMEOUT_MS);
+  if (!response.ok) throw new Error(`generated image download failed with ${response.status}`);
+
+  const contentType = (response.headers.get("content-type") ?? "image/png").split(";")[0]?.trim().toLowerCase() || "image/png";
+  const extension = imageExtension(contentType) ?? "png";
+  const length = Number(response.headers.get("content-length") ?? "0");
+  if (Number.isFinite(length) && length > ARK_MAX_IMAGE_BYTES) throw new Error("generated image is too large");
+
+  const bytes = await response.arrayBuffer();
+  if (bytes.byteLength <= 0) throw new Error("generated image is empty");
+  if (bytes.byteLength > ARK_MAX_IMAGE_BYTES) throw new Error("generated image is too large");
+
+  const key = `generated/memory/${user.id}/${crypto.randomUUID()}.${extension}`;
+  await env.ASSETS_BUCKET.put(key, bytes, {
+    httpMetadata: {
+      contentType,
+      cacheControl: publicAssetHeaders["Cache-Control"],
+    },
+    customMetadata: {
+      userId: user.id,
+      kind: "memory-palace",
+      provider: "volcengine-ark",
+    },
+  });
+  return { key, contentType, byteSize: bytes.byteLength };
+}
+
+function normalizeMemoryDrafts(value: unknown): MemoryCardDraft[] {
+  const object = asObject(value);
+  const rawCards = Array.isArray(object?.cards) ? object.cards : [];
+  return rawCards
+    .map((item): MemoryCardDraft | null => {
+      const card = asObject(item);
+      if (!card) return null;
+      const prompt = normalizeMemoryText(typeof card.prompt === "string" ? card.prompt : "", 180);
+      const answer = normalizeMemoryText(typeof card.answer === "string" ? card.answer : "", 1_000);
+      if (prompt.length < 2 || answer.length < 1) return null;
+      if ([
+        "请填写",
+        "请补充",
+        "缺失",
+        "填空",
+        "__",
+        "材料中第",
+        "这段材料",
+        "上述材料",
+        "该材料",
+        "本文",
+        "具体内容",
+        "核心信息",
+        "涉及的主题",
+        "乱码",
+        "无法生成",
+      ].some((word) => prompt.includes(word))) return null;
+      const tags = Array.isArray(card.tags)
+        ? card.tags.filter((tag): tag is string => typeof tag === "string").map((tag) => tag.trim()).filter(Boolean)
+        : parseMemoryTags(normalizeMemoryTags(typeof card.tags === "string" ? card.tags : "") ?? null);
+      return { prompt, answer, tags: [...new Set(tags)].slice(0, 8) };
+    })
+    .filter((item): item is MemoryCardDraft => Boolean(item))
+    .slice(0, 8);
+}
+
+function fallbackMemoryDrafts(source: string, count: number): MemoryCardDraft[] {
+  const sentences = source
+    .replace(/[！？!?]/g, "。")
+    .split(/[\n。]+/g)
+    .map((item) => normalizeMemoryText(item, 260))
+    .filter((item) => item.length >= 8)
+    .slice(0, 12);
+  const drafts: MemoryCardDraft[] = [];
+  const seen = new Set<string>();
+  const delimiters = ["是指", "指的是", "是把", "是将", "是", "则把", "可以", "能够", "能", "会", "用于", "利用"];
+  const trimConcept = (value: string) => {
+    let result = value.trim();
+    for (const mark of ["，", ",", "；", ";", "：", ":"]) {
+      const index = result.lastIndexOf(mark);
+      if (index >= 0) result = result.slice(index + 1).trim();
+    }
+    return result.slice(0, 24).trim();
+  };
+
+  for (const sentence of sentences) {
+    let concept = "";
+    let prompt = "";
+    let matchedDelimiter = "";
+    for (const delimiter of delimiters) {
+      const index = sentence.indexOf(delimiter);
+      if (index >= 2 && index <= 24) {
+        concept = trimConcept(sentence.slice(0, index));
+        matchedDelimiter = delimiter;
+        break;
+      }
+    }
+    if (concept && ["是指", "指的是", "是把", "是将", "是"].includes(matchedDelimiter)) {
+      prompt = `什么是${concept}？`;
+    } else if (concept) {
+      prompt = `${concept}如何发挥作用？`;
+    } else {
+      concept = trimConcept(sentence.slice(0, 14));
+      prompt = `如何用自己的话复述“${concept}”？`;
+    }
+    if (concept.length < 2 || seen.has(prompt)) continue;
+    seen.add(prompt);
+    drafts.push({
+      prompt,
+      answer: sentence,
+      tags: [concept].slice(0, 1),
+    });
+    if (drafts.length >= count) break;
+  }
+  return drafts;
+}
+
+function fallbackPalaceLayout(palace: MemoryPalaceRow, loci: MemoryLocusRow[]): MemoryPalaceLayout {
+  const positions = [
+    [18, 34], [34, 22], [52, 32], [70, 24], [84, 42],
+    [72, 64], [52, 74], [32, 66], [20, 52], [50, 50],
+  ];
+  return {
+    viewpoint: "2.5D isometric",
+    palette: ["#d4e6da", "#2f6b4f", "#f9fbf9", "#cbd8d0"],
+    style: `${palace.name} 的护眼 2.5D 记忆宫殿空间图`,
+    points: loci.slice(0, 10).map((locus, index) => {
+      const [x, y] = positions[index % positions.length] ?? [50, 50];
+      return {
+        locusId: locus.id,
+        title: locus.title,
+        x,
+        y,
+        hint: locus.description ?? locus.prompt ?? "",
+      };
+    }),
+  };
+}
+
+function buildPalaceImagePrompt(palace: MemoryPalaceRow, layout: MemoryPalaceLayout): string {
+  const pointNames = layout.points.map((point, index) => `${index + 1}. ${point.title}`).join(" / ");
+  return [
+    "2.5D isometric memory palace map, calm wellness app aesthetic, eye-friendly Chinese color palette, soft moss green and warm off-white, premium minimal product design.",
+    `Scene type: ${palace.sceneType}. Palace name: ${palace.name}.`,
+    `Spatial route points: ${pointNames}.`,
+    "Create a clean spatial background without readable text labels, no people, no clutter, clear paths, gentle light, rounded architecture, subtle depth, usable as an interactive learning map.",
+    `Style note: ${layout.style}.`,
+  ].join(" ");
+}
+
+async function handleGenerateMemoryCardDrafts(request: Request, env: Env, user: SessionUserRow): Promise<Response> {
+  const config = getArkConfig(env);
+  if (!config) return error("火山方舟 API Key 还没有配置。", 503);
+  const body = await readBody(request);
+  if (!body) return error("请求内容无效。", 400);
+  const source = normalizeMemoryText(readString(body, "source"), MAX_AI_SOURCE_LENGTH);
+  const count = clampInteger(Number(body.count), 2, 8, 5);
+  const category = normalizeMemoryCategory(readString(body, "category"));
+  if (source.length < 20) return error("请至少输入一小段可提炼的学习材料。", 400);
+
+  const system = [
+    "你是息间 App 的记忆训练产品助手。",
+    "你的任务是把用户给的材料改写成主动回忆卡片。",
+    "必须只返回 JSON，不要 Markdown，不要解释。",
+    "JSON 结构：{\"cards\":[{\"prompt\":\"问题\",\"answer\":\"答案\",\"tags\":[\"标签\"]}]}。",
+    "问题要适合闭卷回忆，答案要短、准确、可复述。不要编造材料之外的事实。",
+    "不要生成填空题、选择题或“请填写缺失内容”式题目。prompt 必须是自然问题，例如“什么是……？”“为什么……？”“如何……？”。",
+    "prompt 必须包含具体概念名，禁止出现“材料中第一条/第二条/上述材料/这段材料/本文”这类泛称。",
+  ].join("\n");
+  const prompt = [
+    `请生成 ${count} 张记忆卡片。`,
+    `默认类目：${category}。`,
+    "材料如下：",
+    source,
+  ].join("\n\n");
+
+  let content = "";
+  try {
+    content = await callArkChat(config, system, prompt);
+  } catch (cause) {
+    console.error(JSON.stringify({ message: "ark card draft failed", error: cause instanceof Error ? cause.message : String(cause) }));
+    return error("AI 卡片生成暂时不可用，请稍后再试。", 502);
+  }
+  const parsed = parseJsonObject(content);
+  let drafts = normalizeMemoryDrafts(parsed);
+  if (drafts.length < Math.min(2, count)) {
+    drafts = fallbackMemoryDrafts(source, count);
+  }
+  if (drafts.length === 0) {
+    drafts = [{
+      prompt: `如何用自己的话复述“${source.slice(0, 14)}”？`,
+      answer: source.slice(0, 800),
+      tags: ["AI提炼"],
+    }];
+  }
+  if (drafts.length === 0) return error("AI 没有生成可用卡片，请换一段更清晰的材料。", 502);
+
+  await env.DB.prepare(
+    `INSERT INTO memory_ai_generations
+      (id, user_id, kind, model, prompt, output_json)
+    VALUES (?1, ?2, 'card-drafts', ?3, ?4, ?5)`,
+  ).bind(crypto.randomUUID(), user.id, config.chatModel, prompt.slice(0, 2_000), JSON.stringify({ cards: drafts })).run();
+
+  return json({ drafts });
+}
+
+async function handleGenerateMemoryPalaceView(palaceId: string, request: Request, env: Env, user: SessionUserRow): Promise<Response> {
+  const config = getArkConfig(env);
+  if (!config) return error("火山方舟 API Key 还没有配置。", 503);
+  const palaceResult = await getMemoryPalaceById(env, user, palaceId);
+  if (!palaceResult) return error("没有找到这个记忆宫殿。", 404);
+  if (palaceResult.loci.length === 0) return error("请先给宫殿添加路径点。", 400);
+
+  const body = await readBody(request).catch(() => null);
+  const preference = normalizeMemoryText(body ? readString(body, "preference") : "", 180);
+  const lociCopy = palaceResult.loci.map((locus) => ({
+    locusId: locus.id,
+    title: locus.title,
+    order: locus.positionOrder,
+    description: locus.description,
+    cardPrompt: locus.prompt,
+  }));
+  const system = [
+    "你是前沿 UI 设计师和记忆术教练。",
+    "请为记忆宫殿生成一个可交互 2.5D 空间布局和文生图提示词。",
+    "必须只返回 JSON，不要 Markdown，不要解释。",
+    "JSON 结构：{\"viewpoint\":\"视角\",\"palette\":[\"#色值\"],\"style\":\"风格\",\"imagePrompt\":\"英文文生图提示词\",\"points\":[{\"locusId\":\"原ID\",\"title\":\"地点名\",\"x\":数字0到100,\"y\":数字0到100,\"hint\":\"短提示\"}]}。",
+    "不要让图片模型生成文字标签，文字由前端叠加。坐标需要形成清晰路线，不要重叠。",
+  ].join("\n");
+  const prompt = [
+    `宫殿名：${palaceResult.palace.name}`,
+    `场景类型：${palaceResult.palace.sceneType}`,
+    preference ? `用户偏好：${preference}` : "用户偏好：护眼、克制、高级、不花哨。",
+    "路径点 JSON：",
+    JSON.stringify(lociCopy),
+  ].join("\n\n");
+
+  let chatContent = "";
+  try {
+    chatContent = await callArkChat(config, system, prompt);
+  } catch (cause) {
+    console.error(JSON.stringify({ message: "ark palace layout failed", error: cause instanceof Error ? cause.message : String(cause) }));
+    return error("AI 空间布局生成暂时不可用，请稍后再试。", 502);
+  }
+
+  const parsed = parseJsonObject(chatContent);
+  const layout = parseMemoryLayout(parsed ? JSON.stringify(parsed) : null) ?? fallbackPalaceLayout(palaceResult.palace, palaceResult.loci);
+  const rawImagePrompt = parsed && typeof parsed.imagePrompt === "string"
+    ? normalizeMemoryText(parsed.imagePrompt, 1_600)
+    : "";
+  const imagePrompt = rawImagePrompt || buildPalaceImagePrompt(palaceResult.palace, layout);
+
+  let imageUrl = "";
+  let stored: { key: string; contentType: string; byteSize: number };
+  try {
+    imageUrl = await callArkImage(config, imagePrompt);
+    stored = await storeGeneratedImageFromUrl(env, user, imageUrl);
+  } catch (cause) {
+    console.error(JSON.stringify({ message: "ark palace image failed", error: cause instanceof Error ? cause.message : String(cause) }));
+    return error("AI 空间图生成暂时不可用，请稍后再试。", 502);
+  }
+
+  const now = sqlTimestamp(new Date());
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE memory_palaces
+      SET image_key = ?1,
+        image_prompt = ?2,
+        image_model = ?3,
+        layout_json = ?4,
+        generated_at = ?5,
+        updated_at = ?5
+      WHERE id = ?6 AND user_id = ?7`,
+    ).bind(stored.key, imagePrompt, config.imageModel, JSON.stringify(layout), now, palaceId, user.id),
+    env.DB.prepare(
+      `INSERT INTO memory_ai_generations
+        (id, user_id, kind, palace_id, model, prompt, output_key, output_json)
+      VALUES (?1, ?2, 'palace-view', ?3, ?4, ?5, ?6, ?7)`,
+    ).bind(
+      crypto.randomUUID(),
+      user.id,
+      palaceId,
+      `${config.chatModel}+${config.imageModel}`,
+      imagePrompt.slice(0, 2_000),
+      stored.key,
+      JSON.stringify({ layout, imageUrlUsed: Boolean(imageUrl), byteSize: stored.byteSize, contentType: stored.contentType }),
+    ),
+  ]);
+
+  const updated = await getMemoryPalaceById(env, user, palaceId);
+  return json({ palace: updated ? publicMemoryPalace(updated.palace, updated.loci) : null });
 }
 
 const memoryItemSelect = `
@@ -1178,6 +1684,11 @@ async function getMemoryPalaceById(env: Env, user: SessionUserRow, palaceId: str
       p.id,
       p.name,
       p.scene_type AS sceneType,
+      p.image_key AS imageKey,
+      p.image_prompt AS imagePrompt,
+      p.image_model AS imageModel,
+      p.layout_json AS layoutJson,
+      p.generated_at AS generatedAt,
       COUNT(l.id) AS lociCount,
       p.created_at AS createdAt
     FROM memory_palaces p
@@ -1213,6 +1724,11 @@ async function handleMemoryPalaces(env: Env, user: SessionUserRow): Promise<Resp
       p.id,
       p.name,
       p.scene_type AS sceneType,
+      p.image_key AS imageKey,
+      p.image_prompt AS imagePrompt,
+      p.image_model AS imageModel,
+      p.layout_json AS layoutJson,
+      p.generated_at AS generatedAt,
       COUNT(l.id) AS lociCount,
       p.created_at AS createdAt
     FROM memory_palaces p
@@ -1332,7 +1848,7 @@ async function handleCreateMemoryLocus(palaceId: string, request: Request, env: 
     WHERE l.id = ?2
     LIMIT 1`,
   ).bind(user.id, id).first<MemoryLocusRow>();
-  return json({ locus: locus ? publicMemoryPalace({ id: palaceId, name: "", sceneType: "home", lociCount: 1, createdAt: "" }, [locus]).loci[0] : null }, 201);
+  return json({ locus: locus ? publicMemoryLocus(locus) : null }, 201);
 }
 
 function trimBinding(value: string | undefined): string {
@@ -1986,6 +2502,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (method === "POST" && path === "/api/memory/items") return handleCreateMemoryItem(request, env, user);
   if (method === "POST" && path === "/api/memory/reviews") return handleMemoryReview(request, env, user);
   if (method === "POST" && path === "/api/memory/sessions/complete") return handleMemorySessionComplete(request, env, user);
+  if (method === "POST" && path === "/api/memory/ai/card-drafts") return handleGenerateMemoryCardDrafts(request, env, user);
   if (method === "GET" && path === "/api/memory/palaces") return handleMemoryPalaces(env, user);
   if (method === "POST" && path === "/api/memory/palaces") return handleCreateMemoryPalace(request, env, user);
 
@@ -1997,6 +2514,11 @@ async function route(request: Request, env: Env): Promise<Response> {
   const memoryLociMatch = path.match(/^\/api\/memory\/palaces\/([a-zA-Z0-9-]+)\/loci$/);
   if (method === "POST" && memoryLociMatch?.[1]) {
     return handleCreateMemoryLocus(memoryLociMatch[1], request, env, user);
+  }
+
+  const memoryPalaceViewMatch = path.match(/^\/api\/memory\/palaces\/([a-zA-Z0-9-]+)\/generate-view$/);
+  if (method === "POST" && memoryPalaceViewMatch?.[1]) {
+    return handleGenerateMemoryPalaceView(memoryPalaceViewMatch[1], request, env, user);
   }
 
   if (method === "POST" && path === "/api/training/complete") return handleTrainingComplete(request, env, user);
