@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>息间 · 30 套 UI 方案</title>
+  <link rel="stylesheet" href="/ui-options.css" />
+  <script src="/ui-options.js" defer></script>
+</head>
+<body>
+  <header class="studio-header"><a href="/admin" class="studio-brand">息间 <span>设计选型</span></a><a href="/admin">返回项目 ↗</a></header>
+  <main class="studio">
+    <section class="intro"><div><h1>找到适合每天打开的界面。</h1><p>30 套视觉方向，相同的打卡功能。先看整体风格，再切换手机、记录和管理页面。</p></div><span class="sample-note">独立预览 · 示例数据</span></section>
+    <section class="viewer" aria-label="方案详细预览">
+      <div class="viewer-head"><div><div class="title-line"><span id="design-number"></span><h2 id="design-name"></h2><span id="recommendation"></span></div><p id="design-description"></p></div><button id="favorite" type="button">收藏方案</button></div>
+      <div class="tools"><div class="segmented" aria-label="预览页面"><button data-page="today" aria-pressed="true">今日打卡</button><button data-page="records" aria-pressed="false">我的记录</button><button data-page="admin" aria-pressed="false">任务管理</button></div><div class="segmented" aria-label="预览设备"><button data-device="desktop" aria-pressed="true">桌面</button><button data-device="mobile" aria-pressed="false">手机</button></div><div class="stepper"><button id="previous" aria-label="上一套方案">←</button><button id="next" aria-label="下一套方案">→</button></div></div>
+      <div id="preview-stage" class="preview-stage"><div id="preview" class="concept"></div></div>
+      <div class="viewer-foot"><p id="design-traits"></p><button id="choose">选择这套方案</button></div>
+      <p id="selection-result" role="status" class="selection-result" hidden></p>
+    </section>
+    <section class="catalog" aria-labelledby="catalog-title"><div class="catalog-head"><h2 id="catalog-title">全部 30 套方案</h2><div class="filters" aria-label="方案筛选"><button data-filter="all" aria-pressed="true">全部</button><button data-filter="light" aria-pressed="false">浅色</button><button data-filter="dark" aria-pressed="false">深色</button><button data-filter="favorite" aria-pressed="false">已收藏 <span id="favorite-count">0</span></button></div></div><div id="gallery" class="gallery"></div><p id="empty" hidden>还没有收藏方案。点击预览区的“收藏方案”，保留喜欢的方向。</p></section>
+    <footer class="studio-footer">点击卡片查看完整预览。打卡、图片和任务编辑均为本页演示；选定后再应用到正式项目。</footer>
+  </main>
+</body>
+</html>

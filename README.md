@@ -1,83 +1,72 @@
-# 息间
+# 息间 · 每日打卡
 
-息间是一款面向长期用眼人群的轻健康 Web 产品。首个模块「松眸训练」提供左右眼专注引导、每日打卡、记录月历和主动分享的养生社区。
+面向一个团队的每日任务打卡平台，使用 React、Vite、Cloudflare Workers、D1 和 R2。
 
-## 已实现
+## 功能
 
-- PC 与移动端响应式首页
-- 左眼、换眼、右眼、双眼放松训练流程
-- 训练暂停、不适提示和减少动态效果
-- 邮箱注册、登录、HttpOnly Session
-- D1 训练记录与每日幂等打卡
-- 社区动态、公开数据快照和鼓励互动
-- R2 图片上传：头像、社区图片、饮食图片
-- 近 7 天摘要与月历记录
-- 浅色与深色模式
-- Cloudflare Workers Static Assets 一体化部署
+- 管理员创建、编辑、启用和停用任务，按星期重复。
+- 成员每日打卡、当天撤销、月历及历史图片记录。
+- 图片要求：不需要、选填、必填；每次最多 3 张，每张不超过 4MB，支持 JPG、PNG、WebP。
+- 管理员按日期查看成员任务进度和图片。
+- pushplus 微信扫码绑定、提醒开关及异步投递结果。
+- 手机与桌面布局、深浅色模式。
 
-## 技术栈
+所有打卡日期按北京时间计算。新任务当天生效；已有任务的编辑与启停从次日生效，保证历史记录不随任务调整变化。原健康记录保留在数据库中，不转换成任务打卡。
 
-- React 19、TypeScript、Vite
-- Cloudflare Vite Plugin、Workers、D1
-- Phosphor Icons
-- 原生 CSS 设计系统
-
-## 本地开发
+## 本地运行
 
 ```bash
-npm install
+npm ci
 npm run cf:types
 npm run db:local
+npm run admin:local
 npm run dev
 ```
 
-访问 `http://127.0.0.1:5173`。
+管理员邮箱在 `wrangler.jsonc` 的 `ADMIN_EMAIL` 中配置。初始化命令只创建本地管理员账号，不覆盖已有账号；普通成员在网页注册。访问 http://127.0.0.1:5173/。
+
+## 微信提醒配置
+
+复制 `.dev.vars.example` 为 `.dev.vars`，配置：
+
+| 字段 | 用途 |
+|---|---|
+| PUSHPLUS_TOKEN | pushplus 用户 Token，开放接口要求用户 Token |
+| PUSHPLUS_SECRET_KEY | 在 pushplus 配置的 SecretKey，用于获取与刷新 AccessKey |
+| PUSHPLUS_CALLBACK_SECRET | 64 位十六进制随机字符串，用于回调验证 |
+
+已有本地凭据不要覆盖。密钥文件已被 Git 忽略。生产密钥通过 Wrangler Secret 配置，不能提交到版本库。
+
+管理员在“管理后台 → 提醒设置”填写公开 HTTPS 根地址、时间并保存，把页面提供的回调地址填入 pushplus“功能设置 → 回调地址”。成员在“个人设置”扫码绑定。二维码 10 分钟有效，绑定后开启提醒，成员可关闭或解除绑定。
+
+扫码绑定需要公开可访问的回调服务，本地 localhost 无法接收 pushplus 回调。正式接入时需确认 pushplus 账号的安全 IP 设置允许服务调用。
+
+定时任务每分钟扫描，达到管理员设置的时间后分批提醒：每次最多 10 人、每分钟最多一次发送请求、每人每天最多一次。已完成或关闭提醒的成员跳过。接口受理后显示“等待投递”，收到回调后才更新为“已发送”或“发送失败”；网络结果不确定时不自动重发。
+
+Cron 在 Cloudflare 部署后运行，本地 Vite 不自动模拟定时触发。
+
+## 生产部署
+
+```bash
+npm run db:remote
+npm run deploy
+```
+
+部署使用 `wrangler.jsonc` 配置的 Workers、D1 和 R2。数据库迁移保留已有用户和历史数据，本地任务与打卡记录不会自动复制到线上。生产管理员需要单独初始化。
+
+正式界面采用“每日手帐”风格，原有方案预览仍保留在 `/ui-options.html` 和 `/ui-directions.html`。
+
+官方接口：
+- [好友与扫码绑定](https://www.pushplus.plus/doc/function/friend.html)
+- [发送及回调接口](https://www.pushplus.plus/doc/guide/api.html)
+- [SecretKey、AccessKey 和二维码接口](https://www.pushplus.plus/doc/guide/openApi.html)
 
 ## 验证
 
 ```bash
-npm run check
-npm run build
-npm audit --omit=dev
-npx wrangler types --check
-npx wrangler deploy --dry-run
+npx tsc -p tsconfig.app.json --noEmit
+npx tsc -p tsconfig.worker.json --noEmit
+npm test
 ```
 
-## Cloudflare 正式部署
-
-1. 登录 Cloudflare：`npx wrangler login`
-2. 创建 D1：`npx wrangler d1 create xijian-db --location apac`
-3. 将返回的 `database_id` 写入 `wrangler.jsonc`
-4. 执行迁移：`npm run db:remote`
-5. 部署：`npm run deploy`
-
-如需自定义域名，在确认域名后把 Custom Domain 路由加入 `wrangler.jsonc`，再重新部署。
-
-## 讯飞超拟人语音合成
-
-训练页「语音帮助模式」会优先请求 `/api/tts/training` 使用讯飞超拟人语音合成，并把生成的 MP3 缓存在 R2。未配置密钥或合成失败时，前端会自动降级到浏览器自带语音。
-
-推荐使用讯飞控制台的 APIPassword 鉴权：
-
-```bash
-npx wrangler secret put XFYUN_TTS_APP_ID
-npx wrangler secret put XFYUN_TTS_API_PASSWORD
-```
-
-如果控制台只提供三件套，也可以使用：
-
-```bash
-npx wrangler secret put XFYUN_TTS_APP_ID
-npx wrangler secret put XFYUN_TTS_API_KEY
-npx wrangler secret put XFYUN_TTS_API_SECRET
-```
-
-非敏感默认配置在 `wrangler.jsonc`：
-
-- `XFYUN_TTS_URL`：超拟人语音合成 WebSocket 地址
-- `XFYUN_TTS_VOICE`：默认发音人
-- `XFYUN_TTS_ORAL_LEVEL`：口语化等级
-
-## 健康边界
-
-本项目用于一般性的用眼休息与视觉专注练习，不提供医疗诊断、验光、治疗或疗效承诺。如出现眼痛、明显头晕、持续重影或其他不适，应停止训练并寻求专业帮助。
+测试使用独立的 Miniflare D1/R2，通知请求为模拟接口，不发送真实消息，不修改本地或线上业务数据。

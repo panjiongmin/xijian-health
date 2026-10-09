@@ -22,5 +22,7 @@ jobs:
         run: npm run cf:types && npx wrangler types --check
       - name: Type check
         run: npm run check
+      - name: Workflow tests
+        run: npm test
       - name: Build
         run: npm run build

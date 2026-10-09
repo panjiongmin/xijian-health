@@ -1,175 +1,52 @@
-import {
-  Brain,
-  CalendarDots,
-  Compass,
-  Eye,
-  House,
-  Palette,
-  PlayCircle,
-  UserCircle,
-  UsersThree,
-} from "@phosphor-icons/react";
-import { useEffect, useRef, useState } from "react";
+import { CalendarDots, CheckSquare, GearSix, Moon, Sun, UserCircle, Notebook } from "@phosphor-icons/react";
+import { useEffect, useState } from "react";
 import { Link, NavLink, Outlet } from "react-router-dom";
 import { useAuth } from "../auth-context";
-
-type Theme = "songhua" | "tianqing" | "cangjia" | "haitang" | "qingdai";
-
-const themes: Array<{ key: Theme; label: string; note: string; color: string }> = [
-  { key: "songhua", label: "松花", note: "清润护眼", color: "#2f6b4f" },
-  { key: "tianqing", label: "天青", note: "雨后清蓝", color: "#2f6f8f" },
-  { key: "cangjia", label: "苍葭", note: "芦苇浅绿", color: "#6f805d" },
-  { key: "haitang", label: "海棠", note: "柔粉暖调", color: "#9d5b6b" },
-  { key: "qingdai", label: "青黛", note: "夜间低亮", color: "#6f7fa8" },
-];
-
-function resolveStoredTheme(): Theme {
-  const stored = localStorage.getItem("xijian-theme");
-  if (themes.some((item) => item.key === stored)) return stored as Theme;
-  if (stored === "dark") return "qingdai";
-  if (stored === "light") return "songhua";
-  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "qingdai" : "songhua";
-}
-
-const mainLinks = [
-  { to: "/", label: "首页", icon: House },
-  { to: "/train", label: "训练", icon: PlayCircle },
-  { to: "/memory", label: "记忆", icon: Brain },
-  { to: "/discover", label: "发现", icon: Compass },
-  { to: "/community", label: "社区", icon: UsersThree },
-  { to: "/records", label: "记录", icon: CalendarDots },
-];
-
+import { dateInBeijing } from "../use-resource";
 export function AppLayout() {
-  const { user, loading } = useAuth();
-  const [theme, setTheme] = useState<Theme>(() => resolveStoredTheme());
-  const [themeMenuOpen, setThemeMenuOpen] = useState(false);
-  const themeMenuRef = useRef<HTMLDivElement | null>(null);
-  const activeTheme = themes.find((item) => item.key === theme) ?? themes[0];
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    localStorage.setItem("xijian-theme", theme);
-  }, [theme]);
-
-  useEffect(() => {
-    if (!themeMenuOpen) return;
-    const onPointerDown = (event: PointerEvent) => {
-      if (themeMenuRef.current?.contains(event.target as Node)) return;
-      setThemeMenuOpen(false);
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setThemeMenuOpen(false);
-    };
-    window.addEventListener("pointerdown", onPointerDown);
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("pointerdown", onPointerDown);
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [themeMenuOpen]);
-
-  return (
-    <div className="app-shell">
-      <header className="site-header">
-        <div className="header-inner">
-          <Link className="brand" to="/" aria-label="息间首页">
-            <span className="brand-mark" aria-hidden="true">
-              <Eye weight="duotone" />
-            </span>
-            <span>息间</span>
-          </Link>
-
-          <nav className="desktop-nav" aria-label="主导航">
-            {mainLinks.map(({ to, label }) => (
-              <NavLink key={to} to={to} end={to === "/"}>
-                {label}
-              </NavLink>
-            ))}
-          </nav>
-
-          <div className="header-actions">
-            <div className="theme-switcher" ref={themeMenuRef}>
-              <button
-                type="button"
-                className="theme-trigger"
-                aria-label={`切换主题色，当前为${activeTheme.label}`}
-                aria-expanded={themeMenuOpen}
-                onClick={() => setThemeMenuOpen((value) => !value)}
-              >
-                <span className="theme-trigger-swatch" style={{ background: activeTheme.color }} aria-hidden="true" />
-                <Palette />
-                <span className="theme-trigger-label">{activeTheme.label}</span>
-              </button>
-              {themeMenuOpen && (
-                <div className="theme-menu" role="menu" aria-label="中国色主题">
-                  <div className="theme-menu-heading">
-                    <strong>中国色主题</strong>
-                    <span>取意 zhongguose.com</span>
-                  </div>
-                  {themes.map((item) => (
-                    <button
-                      key={item.key}
-                      type="button"
-                      className={item.key === theme ? "active" : ""}
-                      onClick={() => {
-                        setTheme(item.key);
-                        setThemeMenuOpen(false);
-                      }}
-                      role="menuitemradio"
-                      aria-checked={item.key === theme}
-                    >
-                      <span className="theme-option-swatch" style={{ background: item.color }} aria-hidden="true" />
-                      <span>
-                        <strong>{item.label}</strong>
-                        <small>{item.note}</small>
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-            {!loading &&
-              (user ? (
-                <Link className="profile-link" to="/me">
-                  <span className={`avatar avatar-${user.avatarCode}`} aria-hidden="true">
-                    {user.displayName.slice(0, 1)}
-                  </span>
-                  <span>{user.displayName}</span>
-                </Link>
-              ) : (
-                <Link className="text-button" to="/login">
-                  登录
-                </Link>
-              ))}
-          </div>
-        </div>
-      </header>
-
-      <main className="main-content">
-        <Outlet />
-      </main>
-
-      <footer className="site-footer">
-        <div>
-          <span className="footer-brand">息间</span>
-          <p>一款帮助你建立轻量健康习惯的工具。</p>
-        </div>
-        <p>训练仅用于一般性的用眼休息与专注练习，不替代医疗诊断或治疗。</p>
-      </footer>
-
-      <nav className="mobile-nav" aria-label="移动端主导航">
-        {mainLinks.map(({ to, label, icon: Icon }) => (
-          <NavLink key={to} to={to} end={to === "/"}>
-            <Icon weight="regular" />
-            <span>{label}</span>
-          </NavLink>
-        ))}
-        <NavLink to="/me">
-          <UserCircle />
-          <span>我的</span>
-        </NavLink>
-      </nav>
+    const { user } = useAuth();
+    const [date, setDate] = useState(dateInBeijing);
+    useEffect(() => {
+        const refresh = () => setDate(dateInBeijing());
+        const timer = window.setInterval(refresh, 30000);
+        window.addEventListener("focus", refresh);
+        return () => { window.clearInterval(timer); window.removeEventListener("focus", refresh); };
+    }, []);
+    const day = new Date(`${date}T12:00:00+08:00`);
+    const weekday = (day.getUTCDay() + 6) % 7;
+    const monthLabel = new Intl.DateTimeFormat("zh-CN", { month: "long", timeZone: "Asia/Shanghai" }).format(day);
+    const weekdayLabel = new Intl.DateTimeFormat("zh-CN", { weekday: "long", timeZone: "Asia/Shanghai" }).format(day);
+    const [dark, setDark] = useState(() => {
+        const saved = localStorage.getItem("checkin-theme");
+        return saved ? saved === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    });
+    useEffect(() => { document.documentElement.dataset.theme = dark ? "dark" : "light"; localStorage.setItem("checkin-theme", dark ? "dark" : "light"); }, [dark]);
+    const links = [{ to: "/", label: "今日打卡", icon: CheckSquare }, { to: "/records", label: "我的记录", icon: CalendarDots },
+        ...(user?.role === "admin" ? [{ to: "/admin", label: "管理后台", icon: GearSix }] : []), { to: "/me", label: "个人设置", icon: UserCircle }];
+    return <div className="app-shell">
+    <header className="site-header"><div className="header-inner">
+      <Link className="brand" to="/"><span className="brand-mark"><Notebook weight="thin"/></span><span>息间<span className="brand-note">我的日常记录本</span></span></Link>
+      <div className="header-actions"><button className="icon-button" aria-label={dark ? "切换浅色模式" : "切换深色模式"} onClick={() => setDark(!dark)}>{dark ? <Sun /> : <Moon />}</button>{user && <Link className="profile-link" to="/me"><span className="avatar">{user.displayName.slice(0, 1)}</span><span className="profile-name">{user.displayName}</span></Link>}</div>
+    </div></header>
+    <main className="main-content"><div className="journal-book">
+      <aside className="journal-cover" aria-label="今日手帐日期">
+        <p className="journal-year">{date.slice(0, 4)} 年 · 每日手帐</p>
+        <div className="journal-date"><h2>{monthLabel}<br />{Number(date.slice(8))} 日</h2><p>{weekdayLabel}</p></div>
+        <div className="journal-stamp" aria-hidden="true">息间<strong>每日</strong>记录</div>
+        <p className="journal-motto">今天，也值得认真记下。</p>
+        <img className="journal-art" src="/design-assets/reading.svg" alt="" width="240" height="180"/>
+        <section className="journal-week" aria-label="本周日期"><h3>这一周</h3><div>{["一", "二", "三", "四", "五", "六", "日"].map((label, i) => {
+            const weekDay = new Date(day); weekDay.setUTCDate(day.getUTCDate() - weekday + i);
+            return <span key={label} className={i === weekday ? "current" : ""} aria-current={i === weekday ? "date" : undefined}>{label}<b>{weekDay.getUTCDate()}</b></span>;
+        })}</div></section>
+        <p className="journal-cover-foot">{user ? `${user.displayName}的日常` : "从今天的一次打卡开始。"}<span>把小事，做成每天。</span></p>
+      </aside>
+      <div className="journal-binding" aria-hidden="true">{Array.from({ length: 8 }, (_, i) => <i key={i}/>)}</div>
+      <div className="journal-paper"><Outlet /></div>
     </div>
-  );
+    {user && <nav className="journal-tabs" aria-label="主导航">{links.map(({to,label,icon:Icon}) => <NavLink key={to} to={to} end={to === "/"}><Icon weight="thin"/>{label}</NavLink>)}</nav>}
+    </main>
+    <footer className="site-footer">息间 · 把每天的小事，认真完成。<span>北京时间 · Asia/Shanghai</span></footer>
+    {user && <nav className="mobile-nav" aria-label="移动端导航">{links.map(({ to, label, icon: Icon }) => <NavLink key={to} to={to} end={to === "/"}><Icon /><span>{label}</span></NavLink>)}</nav>}
+  </div>;
 }

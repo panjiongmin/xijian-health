@@ -1,0 +1,37 @@
+{
+  "illustrations": [
+    {
+      "name": "reading",
+      "file": "reading.svg",
+      "source": "https://opendoodles.s3-us-west-1.amazonaws.com/reading-side.svg",
+      "creator": "Pablo Stanley",
+      "project": "https://www.opendoodles.com/"
+    },
+    {
+      "name": "running",
+      "file": "running.svg",
+      "source": "https://opendoodles.s3-us-west-1.amazonaws.com/running.svg",
+      "creator": "Pablo Stanley",
+      "project": "https://www.opendoodles.com/"
+    },
+    {
+      "name": "meditating",
+      "file": "meditating.svg",
+      "source": "https://opendoodles.s3-us-west-1.amazonaws.com/meditating.svg",
+      "creator": "Pablo Stanley",
+      "project": "https://www.opendoodles.com/"
+    },
+    {
+      "name": "peep",
+      "file": "peep.svg",
+      "source": "https://cdn.prod.website-files.com/5e51c674258ffe10d286d30a/5e53554e46008016518d52e4_peep-36.svg",
+      "creator": "Pablo Stanley",
+      "project": "https://www.openpeeps.com/"
+    }
+  ],
+  "icons": {
+    "project": "https://github.com/phosphor-icons/react",
+    "license": "MIT",
+    "version": "2.1.10"
+  }
+}

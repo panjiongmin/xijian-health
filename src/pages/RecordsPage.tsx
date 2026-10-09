@@ -1,102 +1,41 @@
-import { CalendarDots, LockKey } from "@phosphor-icons/react";
-import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
-import { apiRequest } from "../api";
-import { useAuth } from "../auth-context";
-import { WeekStrip } from "../components/WeekStrip";
-import type { Checkin, HomeSummary } from "../types";
-
+import { CaretLeft, CaretRight } from "@phosphor-icons/react";
+import { useState } from "react";
+import { Feedback } from "../components/Feedback";
+import { TaskCard } from "../components/TaskCard";
+import type { Task } from "../types";
+import { dateInBeijing, useResource } from "../use-resource";
+type MonthData = {
+    month: string;
+    totalDays: number;
+    days: Array<{
+        date: string;
+        planned: number;
+        completed: number;
+    }>;
+};
 export function RecordsPage() {
-  const { user, loading: authLoading } = useAuth();
-  const [checkins, setCheckins] = useState<Checkin[]>([]);
-  const [summary, setSummary] = useState<HomeSummary | null>(null);
-
-  useEffect(() => {
-    if (!user) return;
-    Promise.all([
-      apiRequest<{ checkins: Checkin[] }>("/api/checkins"),
-      apiRequest<HomeSummary>("/api/home"),
-    ])
-      .then(([checkinResult, homeResult]) => {
-        setCheckins(checkinResult.checkins);
-        setSummary(homeResult);
-      })
-      .catch(() => undefined);
-  }, [user]);
-
-  const monthDays = useMemo(() => {
-    const today = new Date();
-    const year = today.getFullYear();
-    const month = today.getMonth();
-    const firstDay = new Date(year, month, 1).getDay();
-    const totalDays = new Date(year, month + 1, 0).getDate();
-    const completed = new Set(checkins.map((item) => item.localDate));
-    const items: Array<{ day?: number; completed?: boolean; key: string }> = [];
-    for (let index = 0; index < firstDay; index += 1) {
-      items.push({ key: `empty-${index}` });
-    }
-    for (let day = 1; day <= totalDays; day += 1) {
-      const date = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-      items.push({ key: date, day, completed: completed.has(date) });
-    }
-    return { items, title: `${year} 年 ${month + 1} 月` };
-  }, [checkins]);
-
-  if (authLoading) return <div className="page-loading" />;
-
-  if (!user) {
-    return (
-      <div className="auth-required page-width">
-        <LockKey weight="duotone" />
-        <h1>登录后查看你的记录</h1>
-        <p>私人打卡不会自动公开，是否分享到社区由你决定。</p>
-        <Link className="primary-button" to="/login?next=/records">
-          登录
-        </Link>
-      </div>
-    );
-  }
-
-  return (
-    <div className="records-page page-width">
-      <header className="page-heading">
-        <span className="eyebrow">我的记录</span>
-        <h1>每一次完成，都算数。</h1>
-        <p>不追求完美连续，只看见已经做过的努力。</p>
-      </header>
-
-      <section className="record-summary">
-        <div className="record-total">
-          <span>累计完成</span>
-          <strong>{summary?.totalCount ?? 0}</strong>
-          <p>次用眼休息训练</p>
-        </div>
-        <div className="record-secondary">
-          <div><strong>{summary?.weekCount ?? 0}</strong><span>近 7 天</span></div>
-          <div><strong>{summary?.streak ?? 0}</strong><span>连续记录</span></div>
-        </div>
-        <WeekStrip completedDates={summary?.recentDates ?? []} />
-      </section>
-
-      <section className="calendar-section">
-        <div className="calendar-heading">
-          <div>
-            <CalendarDots weight="duotone" />
-            <h2>{monthDays.title}</h2>
-          </div>
-          <span>绿色日期表示已完成</span>
-        </div>
-        <div className="calendar-weekdays" aria-hidden="true">
-          {['日', '一', '二', '三', '四', '五', '六'].map((day) => <span key={day}>{day}</span>)}
-        </div>
-        <div className="month-grid">
-          {monthDays.items.map((item) => (
-            <div key={item.key} className={item.completed ? "completed" : item.day ? "" : "empty"}>
-              {item.day && <span>{item.day}</span>}
-            </div>
-          ))}
-        </div>
-      </section>
-    </div>
-  );
+    const today = dateInBeijing();
+    const [month, setMonth] = useState(today.slice(0, 7));
+    const [selected, setSelected] = useState(today);
+    const resource = useResource<MonthData>(`/api/records?month=${month}`);
+    const detail = useResource<{
+        date: string;
+        tasks: Task[];
+    }>(`/api/records/day?date=${selected}`);
+    const [year, monthNumber] = month.split("-").map(Number);
+    const leading = (new Date(Date.UTC(year, monthNumber - 1, 1)).getUTCDay() + 6) % 7;
+    const length = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
+    const shift = (amount: number) => { const date = new Date(Date.UTC(year, monthNumber - 1 + amount, 1)); const next = date.toISOString().slice(0, 7); setMonth(next); setSelected(next === today.slice(0, 7) ? today : `${next}-01`); };
+    return <div className="page-width"><div className="page-heading"><div><h1>我的记录</h1><p>每一次完成，都留下了痕迹。</p></div>{resource.data && <span className="count-label">累计打卡 <strong>{resource.data.totalDays}</strong> 天</span>}</div>
+    <Feedback error={resource.error} loading={resource.loading} retry={resource.reload}/>
+    {resource.data && <section className="calendar-panel"><div className="calendar-toolbar"><button className="icon-button" aria-label="上个月" onClick={() => shift(-1)}><CaretLeft /></button><h2>{year} 年 {monthNumber} 月</h2><button className="icon-button" aria-label="下个月" disabled={month >= today.slice(0, 7)} onClick={() => shift(1)}><CaretRight /></button></div>
+      <div className="calendar-grid">{["一", "二", "三", "四", "五", "六", "日"].map(day => <span className="calendar-weekday" key={day}>{day}</span>)}{Array.from({ length: leading }, (_, i) => <span key={`space-${i}`}/>)}{Array.from({ length }, (_, i) => {
+                const date = `${month}-${String(i + 1).padStart(2, "0")}`;
+                const day = resource.data?.days.find(item => item.date === date);
+                const all = Boolean(day?.planned && day.completed === day.planned);
+                const some = Boolean(day?.completed);
+                return <button key={date} disabled={date > today} className={`calendar-day ${selected === date ? "selected" : ""} ${all ? "all-done" : some ? "part-done" : ""}`} aria-pressed={selected === date} aria-label={`${date}，${day?.completed || 0}/${day?.planned || 0} 项完成`} onClick={() => setSelected(date)}><span>{i + 1}</span><small>{day?.planned ? `${day.completed}/${day.planned}` : "—"}</small></button>;
+            })}</div><div className="calendar-legend"><span><i className="legend-dot success"/>全部完成</span><span><i className="legend-dot partial"/>部分完成</span><span>— 无任务记录</span></div></section>}
+    <section className="record-detail"><h2>{selected} 的任务</h2><Feedback error={detail.error} loading={detail.loading} retry={detail.reload}/>{detail.data && (detail.data.tasks.length ? <div className="task-list">{detail.data.tasks.map(task => <TaskCard key={task.id} task={task} readOnly/>)}</div> : <p className="muted">这一天没有任务记录。</p>)}</section>
+  </div>;
 }
