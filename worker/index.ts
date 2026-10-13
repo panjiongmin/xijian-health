@@ -638,14 +638,33 @@ async function sendWebhook(settings: ReminderSettings, title: string, content: s
     if (!body || body.success === false || body.ok === false || body.error
         || (body.code !== undefined && ![0, 200, "0", "200"].includes(body.code as number | string))
         || (body.errcode !== undefined && body.errcode !== 0))
-        throw new Error("webhook_rejected");
+        throw new Error(`webhook_rejected_${typeof body?.code === "number" ? body.code : typeof body?.errcode === "number" ? body.errcode : "unknown"}`);
 }
 async function testWebhook(env: AppEnv) {
     const settings = await reminderSettings(env);
     try {
         await sendWebhook(settings, "息间 · 通知测试", `Webhook 配置测试。\n${settings.siteUrl || ""}`);
         return json({ accepted: true });
-    } catch { return error("Webhook 测试失败，请检查地址、Token 和推送服务。", 502); }
+    } catch (cause) {
+        const code = cause instanceof Error ? cause.message : "";
+        if (code === "webhook_http_401" || code === "webhook_rejected_401")
+            return error("推送服务拒绝了 Token（401）。请从推送服务复制当前有效的推送 Token，填写到本页并保存后再测试。", 502);
+        if (code === "webhook_http_403")
+            return error("推送服务拒绝访问（403）。请检查接口权限及防火墙设置。", 502);
+        if (code === "webhook_http_404")
+            return error("推送接口不存在（404）。请确认 Webhook 地址为发送接口 /send。", 502);
+        if (/^webhook_http_\d+$/.test(code))
+            return error(`推送服务返回 HTTP ${code.slice("webhook_http_".length)}。请检查推送服务的发送记录。`, 502);
+        if (code === "webhook_not_configured")
+            return error("请先保存有效的 Webhook 地址和 Token。", 400);
+        if (code === "webhook_invalid_response")
+            return error("推送接口返回格式不正确，需要 JSON 响应或 HTTP 204。", 502);
+        if (/^webhook_rejected_/.test(code))
+            return error(`推送服务报告发送失败（错误码：${code.slice("webhook_rejected_".length)}）。请查看推送服务中的微信发送记录。`, 502);
+        if (cause instanceof Error && cause.name === "TimeoutError")
+            return error("推送接口超过 15 秒未响应，请检查推送服务运行状态。", 502);
+        return error("无法连接推送接口，请检查 HTTPS 证书、网络或接口是否存在重定向。", 502);
+    }
 }
 async function runWebhookReminder(env: AppEnv, settings: ReminderSettings, date: string) {
     if (!settings.webhookUrl || !settings.webhookToken) return { queued: 0 };

@@ -183,6 +183,14 @@ test("任务、图片、权限、历史记录和微信提醒完整流程", async
     assert.equal((await DB.prepare("SELECT status FROM webhook_deliveries WHERE local_date=?1").bind(date).first()).status,"failed");
     assert.equal((await runReminders(env,later(9))).queued,0,"失败不自动重复发送");
     assert.equal((await request("/api/admin/reminders/test",{cookie:admin,method:"POST"})).status,502);
+    globalThis.fetch=async()=>Response.json({code:401,message:"推送 Token 无效"},{status:401});
+    const invalidTokenResponse=await request("/api/admin/reminders/test",{cookie:admin,method:"POST"});
+    assert.equal(invalidTokenResponse.status,502);
+    const invalidTokenBody=await invalidTokenResponse.json();
+    assert.match(invalidTokenBody.error,/Token（401）/);
+    assert.ok(!JSON.stringify(invalidTokenBody).includes(webhookForm.webhookToken));
+    globalThis.fetch=async()=>Response.json({errcode:40037});
+    assert.match((await (await request("/api/admin/reminders/test",{cookie:admin,method:"POST"})).json()).error,/40037/);
     await request("/api/auth/logout",{cookie:member,method:"POST"});
     assert.equal((await request("/api/today",{cookie:member})).status,401);
   } finally {globalThis.fetch=originalFetch;await mf.dispose();}
