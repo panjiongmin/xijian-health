@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { randomBytes, pbkdf2Sync } from "node:crypto";
+import { randomBytes, pbkdf2Sync, createHash } from "node:crypto";
+import ts from "typescript";
 import { Miniflare } from "miniflare";
 import worker, { beijingDate, beijingTime, imageMime, runReminders } from "../worker/index.ts";
 
@@ -165,7 +166,7 @@ test("任务、图片、权限、历史记录和微信提醒完整流程", async
     await request("/api/admin/reminders",{cookie:admin,method:"PUT",body:{...webhookForm,webhookToken:""}});
     let webhookCalls=0;
     globalThis.fetch=async(url,init)=>{
-      webhookCalls++; assert.equal(url,webhookForm.webhookUrl);assert.equal(init.redirect,"error");
+      webhookCalls++; assert.equal(url,webhookForm.webhookUrl);assert.equal(init.redirect,"manual");
       const payload=JSON.parse(init.body);assert.deepEqual(Object.keys(payload).sort(),["content","title","token"]);
       assert.equal(payload.token,webhookForm.webhookToken);assert.ok(payload.title);assert.ok(payload.content);
       return Response.json({success:true});
@@ -191,7 +192,35 @@ test("任务、图片、权限、历史记录和微信提醒完整流程", async
     assert.ok(!JSON.stringify(invalidTokenBody).includes(webhookForm.webhookToken));
     globalThis.fetch=async()=>Response.json({errcode:40037});
     assert.match((await (await request("/api/admin/reminders/test",{cookie:admin,method:"POST"})).json()).error,/40037/);
+    globalThis.fetch=async()=>new Response(null,{status:302,headers:{Location:"https://other.example.com/send"}});
+    assert.match((await (await request("/api/admin/reminders/test",{cookie:admin,method:"POST"})).json()).error,/重定向/);
     await request("/api/auth/logout",{cookie:member,method:"POST"});
     assert.equal((await request("/api/today",{cookie:member})).status,401);
   } finally {globalThis.fetch=originalFetch;await mf.dispose();}
+});
+
+test("Webhook 使用真实 Workers 运行时发送，且不跟随重定向", async () => {
+  const source=readFileSync(new URL("../worker/index.ts",import.meta.url),"utf8");
+  const script=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ESNext}}).outputText;
+  let calls=0,status=200;
+  const mf=new Miniflare({modules:true,script,compatibilityDate:"2026-06-22",compatibilityFlags:["nodejs_compat"],
+    d1Databases:{DB:"webhook-runtime-test"},bindings:{ADMIN_EMAIL:"admin@example.test"},
+    outboundService:async request=>{
+      calls++;assert.equal(request.url,"https://push.example.com/send");assert.equal(request.method,"POST");
+      assert.deepEqual(await request.json(),{token:"runtime-test-token",title:"息间 · 通知测试",content:"Webhook 配置测试。\nhttps://app.example.test"});
+      return status===302?new Response(null,{status:302,headers:{Location:"https://other.example.com/send"}}):Response.json({code:200});
+    }});
+  try {
+    const DB=await mf.getD1Database("DB");
+    for(const file of ["0001_initial.sql","0002_r2_assets.sql","0005_daily_tasks.sql","0006_pushplus_receipts.sql","0007_webhook_reminders.sql"]){
+      const sql=readFileSync(new URL(`../migrations/${file}`,import.meta.url),"utf8").replace(/--[^\n]*/g,"");
+      for(const statement of sql.split(";").map(value=>value.trim()).filter(Boolean))await DB.prepare(statement).run();
+    }
+    await DB.prepare("INSERT INTO users(id,email,display_name) VALUES('admin','admin@example.test','管理员')").run();
+    await DB.prepare("INSERT INTO sessions(id,user_id,token_hash,expires_at) VALUES('session','admin',?1,datetime('now','+1 hour'))").bind(createHash("sha256").update("runtime-session").digest("hex")).run();
+    await DB.prepare("UPDATE reminder_settings SET provider='webhook',webhook_url='https://push.example.com/send',webhook_token='runtime-test-token',site_url='https://app.example.test' WHERE id=1").run();
+    const request=()=>mf.dispatchFetch("https://app.example.test/api/admin/reminders/test",{method:"POST",headers:{Cookie:"xijian_session=runtime-session",Origin:"https://app.example.test"}});
+    const accepted=await request();assert.equal(accepted.status,200);assert.deepEqual(await accepted.json(),{accepted:true});assert.equal(calls,1);
+    status=302;const redirect=await request();assert.equal(redirect.status,502);assert.match((await redirect.json()).error,/重定向/);assert.equal(calls,2);
+  } finally {await mf.dispose();}
 });

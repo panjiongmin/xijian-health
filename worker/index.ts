@@ -626,8 +626,9 @@ function validWebhookUrl(value: string): boolean {
 async function sendWebhook(settings: ReminderSettings, title: string, content: string) {
     if (!validWebhookUrl(settings.webhookUrl) || !settings.webhookToken)
         throw new Error("webhook_not_configured");
-    const response = await fetch(settings.webhookUrl, { method: "POST", redirect: "error", signal: AbortSignal.timeout(15000),
+    const response = await fetch(settings.webhookUrl, { method: "POST", redirect: "manual", signal: AbortSignal.timeout(15000),
         headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: settings.webhookToken, title, content }) });
+    if (response.status >= 300 && response.status < 400) throw new Error("webhook_redirect");
     if (!response.ok) throw new Error(`webhook_http_${response.status}`);
     if (response.status === 204) return;
     const bytes = await readLimited(response, 16384);
@@ -657,6 +658,8 @@ async function testWebhook(env: AppEnv) {
             return error(`推送服务返回 HTTP ${code.slice("webhook_http_".length)}。请检查推送服务的发送记录。`, 502);
         if (code === "webhook_not_configured")
             return error("请先保存有效的 Webhook 地址和 Token。", 400);
+        if (code === "webhook_redirect")
+            return error("推送接口发生重定向。请填写最终的 HTTPS 发送地址；为保护 Token，程序不会自动跟随跳转。", 502);
         if (code === "webhook_invalid_response")
             return error("推送接口返回格式不正确，需要 JSON 响应或 HTTP 204。", 502);
         if (/^webhook_rejected_/.test(code))
