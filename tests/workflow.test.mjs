@@ -10,7 +10,7 @@ test("任务、图片、权限、历史记录和微信提醒完整流程", async
   const originalFetch = globalThis.fetch;
   try {
     const DB = await mf.getD1Database("DB");
-    for(const file of ["0001_initial.sql","0002_r2_assets.sql","0005_daily_tasks.sql","0006_pushplus_receipts.sql"]) {
+    for(const file of ["0001_initial.sql","0002_r2_assets.sql","0005_daily_tasks.sql","0006_pushplus_receipts.sql","0007_webhook_reminders.sql"]) {
       const sql = readFileSync(new URL(`../migrations/${file}`,import.meta.url),"utf8").replace(/--[^\n]*/g,"");
       for(const statement of sql.split(";").map(value=>value.trim()).filter(Boolean)) await DB.prepare(statement).run();
     }
@@ -153,6 +153,36 @@ test("任务、图片、权限、历史记录和微信提醒完整流程", async
     assert.equal(tomorrowPlan.due,0,"停用应在次日生效");
     assert.equal((await request("/api/notifications",{cookie:member,method:"DELETE"})).status,200);
     assert.equal((await (await request("/api/notifications",{cookie:member})).json()).bound,false);
+    const webhookForm={enabled:true,reminderTime:"00:00",siteUrl:"https://app.example.test",provider:"webhook",webhookUrl:"https://push.example.com/send",webhookToken:"webhook-test-secret"};
+    assert.equal((await request("/api/admin/reminders",{cookie:member,method:"PUT",body:webhookForm})).status,403);
+    assert.equal((await request("/api/admin/reminders",{cookie:admin,method:"PUT",body:{...webhookForm,webhookUrl:"https://127.0.0.1/send"}})).status,400);
+    assert.equal((await request("/api/admin/reminders",{cookie:admin,method:"PUT",body:{...webhookForm,webhookUrl:"https://localhost/send"}})).status,400);
+    assert.equal((await request("/api/admin/reminders",{cookie:admin,method:"PUT",body:{...webhookForm,webhookUrl:"https://push.example.com/send?token=secret"}})).status,400);
+    const saved=await request("/api/admin/reminders",{cookie:admin,method:"PUT",body:webhookForm});
+    assert.equal(saved.status,200);
+    const savedText=await saved.text();assert.ok(!savedText.includes(webhookForm.webhookToken));
+    assert.equal(JSON.parse(savedText).webhookTokenConfigured,true);
+    await request("/api/admin/reminders",{cookie:admin,method:"PUT",body:{...webhookForm,webhookToken:""}});
+    let webhookCalls=0;
+    globalThis.fetch=async(url,init)=>{
+      webhookCalls++; assert.equal(url,webhookForm.webhookUrl);assert.equal(init.redirect,"error");
+      const payload=JSON.parse(init.body);assert.deepEqual(Object.keys(payload).sort(),["content","title","token"]);
+      assert.equal(payload.token,webhookForm.webhookToken);assert.ok(payload.title);assert.ok(payload.content);
+      return Response.json({success:true});
+    };
+    assert.equal((await request("/api/admin/reminders/test",{cookie:member,method:"POST"})).status,403);
+    assert.equal((await request("/api/admin/reminders/test",{cookie:admin,method:"POST"})).status,200);
+    const concurrent=await Promise.all([runReminders(env,later(6)),runReminders(env,later(6))]);
+    assert.equal(concurrent.reduce((sum,result)=>sum+result.queued,0),1,"并发定时触发也只能发送一次");
+    assert.equal((await runReminders(env,later(7))).queued,0,"团队每天只发送一次，不要求成员绑定");
+    assert.equal(webhookCalls,2);
+    assert.equal((await DB.prepare("SELECT status FROM webhook_deliveries WHERE local_date=?1").bind(date).first()).status,"accepted");
+    await DB.prepare("DELETE FROM webhook_deliveries").run();
+    globalThis.fetch=async()=>Response.json({success:false,error:"provider rejected"});
+    assert.equal((await runReminders(env,later(8))).queued,0);
+    assert.equal((await DB.prepare("SELECT status FROM webhook_deliveries WHERE local_date=?1").bind(date).first()).status,"failed");
+    assert.equal((await runReminders(env,later(9))).queued,0,"失败不自动重复发送");
+    assert.equal((await request("/api/admin/reminders/test",{cookie:admin,method:"POST"})).status,502);
     await request("/api/auth/logout",{cookie:member,method:"POST"});
     assert.equal((await request("/api/today",{cookie:member})).status,401);
   } finally {globalThis.fetch=originalFetch;await mf.dispose();}

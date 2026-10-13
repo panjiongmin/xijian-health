@@ -250,6 +250,9 @@ type ReminderSettings = {
     enabled: number;
     reminderTime: string;
     siteUrl: string;
+    provider: "pushplus" | "webhook";
+    webhookUrl: string;
+    webhookToken: string;
 };
 export function beijingDate(now = new Date()): string {
     return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
@@ -285,7 +288,7 @@ async function today(env: AppEnv, user: SessionUserRow) {
     const date = beijingDate();
     await snapshotDay(env, date);
     const [tasks, images, settings] = await Promise.all([dayTasks(env, user.id, date), imagesFor(env, user.id, date), reminderSettings(env)]);
-    return json({ date, tasks: withImages(tasks, images), reminderTime: settings.enabled ? settings.reminderTime : null });
+    return json({ date, tasks: withImages(tasks, images), reminderProvider: settings.provider, reminderTime: settings.enabled ? settings.reminderTime : null });
 }
 async function saveTask(request: Request, env: AppEnv, user: SessionUserRow, id?: string) {
     const body = await readBody(request);
@@ -471,7 +474,7 @@ async function adminOverview(request: Request, env: AppEnv) {
             }) })) });
 }
 async function reminderSettings(env: AppEnv): Promise<ReminderSettings> {
-    return (await env.DB.prepare("SELECT enabled,reminder_time AS reminderTime,site_url AS siteUrl FROM reminder_settings WHERE id=1").first<ReminderSettings>())!;
+    return (await env.DB.prepare("SELECT enabled,reminder_time AS reminderTime,site_url AS siteUrl,provider,webhook_url AS webhookUrl,webhook_token AS webhookToken FROM reminder_settings WHERE id=1").first<ReminderSettings>())!;
 }
 function ready(env: AppEnv) { return Boolean(env.PUSHPLUS_TOKEN && env.PUSHPLUS_SECRET_KEY && env.PUSHPLUS_CALLBACK_SECRET); }
 function callbackUrl(env: AppEnv, siteUrl: string) { return `${siteUrl}/api/pushplus/callback/${env.PUSHPLUS_CALLBACK_SECRET}`; }
@@ -480,7 +483,7 @@ async function preferences(env: AppEnv, user: SessionUserRow) {
             enabled: number;
             friendToken: string | null;
         }>()]);
-    return json({ enabled: Boolean(pref?.enabled), bound: Boolean(pref?.friendToken), available: ready(env) && Boolean(settings.siteUrl), remindersEnabled: Boolean(settings.enabled), reminderTime: settings.reminderTime });
+    return json({ provider: settings.provider, enabled: Boolean(pref?.enabled), bound: Boolean(pref?.friendToken), available: settings.provider === "pushplus" && ready(env) && Boolean(settings.siteUrl), remindersEnabled: Boolean(settings.enabled), reminderTime: settings.reminderTime });
 }
 async function setPreference(request: Request, env: AppEnv, user: SessionUserRow) {
     const body = await readBody(request);
@@ -521,7 +524,7 @@ async function accessKey(env: AppEnv): Promise<string> {
 }
 async function bindingQr(env: AppEnv, user: SessionUserRow) {
     const settings = await reminderSettings(env);
-    if (!ready(env) || !settings.siteUrl)
+    if (settings.provider !== "pushplus" || !ready(env) || !settings.siteUrl)
         return error("管理员尚未配置微信提醒，请稍后再绑定。", 503);
     const code = randomToken();
     const result = await env.DB.prepare(`INSERT INTO notification_preferences(user_id,binding_code,binding_expires_at,qr_requested_at)
@@ -575,6 +578,7 @@ async function callback(request: Request, env: AppEnv, secret: string) {
 async function adminReminderSettings(env: AppEnv) {
     const settings = await reminderSettings(env);
     return json({ enabled: Boolean(settings.enabled), reminderTime: settings.reminderTime, siteUrl: settings.siteUrl,
+        provider: settings.provider, webhookUrl: settings.webhookUrl, webhookTokenConfigured: Boolean(settings.webhookToken),
         configured: { token: Boolean(env.PUSHPLUS_TOKEN), secretKey: Boolean(env.PUSHPLUS_SECRET_KEY), callbackSecret: Boolean(env.PUSHPLUS_CALLBACK_SECRET) },
         callbackUrl: settings.siteUrl && env.PUSHPLUS_CALLBACK_SECRET ? callbackUrl(env, settings.siteUrl) : null });
 }
@@ -594,17 +598,81 @@ async function saveReminderSettings(request: Request, env: AppEnv) {
             return error("网站地址无效。", 400);
         }
     }
-    if (body.enabled && (!ready(env) || !siteUrl))
-        return error("请先配置 pushplus 凭据与公开网站地址。", 400);
-    await env.DB.prepare("UPDATE reminder_settings SET enabled=?1,reminder_time=?2,site_url=?3 WHERE id=1").bind(body.enabled ? 1 : 0, readString(body, "reminderTime"), siteUrl).run();
+    const previous = await reminderSettings(env);
+    const provider = body.provider ?? previous.provider;
+    if (provider !== "pushplus" && provider !== "webhook")
+        return error("通知方式无效。", 400);
+    const webhookUrl = body.webhookUrl === undefined ? previous.webhookUrl : readString(body, "webhookUrl");
+    const webhookToken = readString(body, "webhookToken") || previous.webhookToken;
+    if (webhookUrl && !validWebhookUrl(webhookUrl))
+        return error("Webhook 地址需要使用公开域名的 HTTPS 接口，不能包含账号、查询参数或片段。", 400);
+    if (webhookToken.length > 512 || /[\r\n]/.test(webhookToken))
+        return error("Webhook Token 无效。", 400);
+    if (body.enabled && (!siteUrl || (provider === "pushplus" ? !ready(env) : !webhookUrl || !webhookToken)))
+        return error("请先配置所选通知方式的凭据与公开网站地址。", 400);
+    await env.DB.prepare("UPDATE reminder_settings SET enabled=?1,reminder_time=?2,site_url=?3,provider=?4,webhook_url=?5,webhook_token=?6 WHERE id=1")
+        .bind(body.enabled ? 1 : 0, readString(body, "reminderTime"), siteUrl, provider, webhookUrl, webhookToken).run();
     return adminReminderSettings(env);
+}
+function validWebhookUrl(value: string): boolean {
+    try {
+        const url = new URL(value);
+        const host = url.hostname.toLowerCase();
+        return value.length <= 2048 && url.protocol === "https:" && !url.username && !url.password && !url.search && !url.hash
+            && (!url.port || url.port === "443") && /^[a-z0-9.-]+\.[a-z]{2,}$/.test(host)
+            && !/(^|\.)(localhost|local|internal|test|invalid)$/.test(host);
+    } catch { return false; }
+}
+async function sendWebhook(settings: ReminderSettings, title: string, content: string) {
+    if (!validWebhookUrl(settings.webhookUrl) || !settings.webhookToken)
+        throw new Error("webhook_not_configured");
+    const response = await fetch(settings.webhookUrl, { method: "POST", redirect: "error", signal: AbortSignal.timeout(15000),
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: settings.webhookToken, title, content }) });
+    if (!response.ok) throw new Error(`webhook_http_${response.status}`);
+    if (response.status === 204) return;
+    const bytes = await readLimited(response, 16384);
+    if (!bytes) throw new Error("webhook_invalid_response");
+    let body: JsonObject | null;
+    try { body = asObject(JSON.parse(new TextDecoder().decode(bytes))); }
+    catch { throw new Error("webhook_invalid_response"); }
+    if (!body || body.success === false || body.ok === false || body.error
+        || (body.code !== undefined && ![0, 200, "0", "200"].includes(body.code as number | string))
+        || (body.errcode !== undefined && body.errcode !== 0))
+        throw new Error("webhook_rejected");
+}
+async function testWebhook(env: AppEnv) {
+    const settings = await reminderSettings(env);
+    try {
+        await sendWebhook(settings, "息间 · 通知测试", `Webhook 配置测试。\n${settings.siteUrl || ""}`);
+        return json({ accepted: true });
+    } catch { return error("Webhook 测试失败，请检查地址、Token 和推送服务。", 502); }
+}
+async function runWebhookReminder(env: AppEnv, settings: ReminderSettings, date: string) {
+    if (!settings.webhookUrl || !settings.webhookToken) return { queued: 0 };
+    const summary = await env.DB.prepare(`SELECT COUNT(DISTINCT u.id) AS members,COUNT(*) AS remaining FROM users u
+        JOIN task_days d ON d.local_date=?1 AND d.due=1
+        WHERE u.status='active' AND u.password_hash IS NOT NULL AND NOT EXISTS
+        (SELECT 1 FROM task_checkins c WHERE c.user_id=u.id AND c.task_id=d.task_id AND c.local_date=d.local_date)`).bind(date).first<{members: number; remaining: number}>();
+    if (!summary?.remaining) return { queued: 0 };
+    const claimed = await env.DB.prepare("INSERT OR IGNORE INTO webhook_deliveries(local_date,status) VALUES(?1,'processing')").bind(date).run();
+    if (!claimed.meta.changes) return { queued: 0 };
+    try {
+        await sendWebhook(settings, "息间 · 今日打卡提醒", `${date}：团队还有 ${summary.members} 位成员未完成，共 ${summary.remaining} 项任务。\n打开打卡：${settings.siteUrl}/`);
+        await env.DB.prepare("UPDATE webhook_deliveries SET status='accepted',updated_at=CURRENT_TIMESTAMP WHERE local_date=?1").bind(date).run();
+        return { queued: 1 };
+    } catch {
+        await env.DB.prepare("UPDATE webhook_deliveries SET status='failed',error_code='request_failed_or_unknown',updated_at=CURRENT_TIMESTAMP WHERE local_date=?1").bind(date).run();
+        return { queued: 0 };
+    }
 }
 export async function runReminders(env: AppEnv, now = new Date()) {
     const date = beijingDate(now);
     await snapshotDay(env, date);
     const settings = await reminderSettings(env);
-    if (!settings.enabled || !ready(env) || !settings.siteUrl || beijingTime(now) < settings.reminderTime)
+    if (!settings.enabled || !settings.siteUrl || beijingTime(now) < settings.reminderTime)
         return { queued: 0 };
+    if (settings.provider === "webhook") return runWebhookReminder(env, settings, date);
+    if (!ready(env)) return { queued: 0 };
     const slot = now.toISOString().slice(0, 16);
     const claimedSlot = await env.DB.prepare("INSERT OR IGNORE INTO reminder_slots(slot) VALUES(?1)").bind(slot).run();
     if (!claimedSlot.meta.changes)
@@ -735,6 +803,8 @@ async function route(request: Request, env: AppEnv): Promise<Response> {
         return adminReminderSettings(env);
     if (path === "/api/admin/reminders" && method === "PUT")
         return saveReminderSettings(request, env);
+    if (path === "/api/admin/reminders/test" && method === "POST")
+        return testWebhook(env);
     return error("没有找到这个接口。", 404);
 }
 export default {

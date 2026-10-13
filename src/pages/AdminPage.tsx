@@ -88,12 +88,12 @@ function MemberOverview() {
 }
 function ReminderManager() {
     const resource = useResource<ReminderConfig>("/api/admin/reminders");
-    const [form, setForm] = useState({ enabled: false, reminderTime: "20:07", siteUrl: "" });
+    const [form, setForm] = useState({ enabled: false, reminderTime: "20:07", siteUrl: "", provider: "pushplus" as "pushplus" | "webhook", webhookUrl: "", webhookToken: "" });
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
     const [success, setSuccess] = useState("");
     useEffect(() => { if (resource.data)
-        setForm({ enabled: resource.data.enabled, reminderTime: resource.data.reminderTime, siteUrl: resource.data.siteUrl }); }, [resource.data]);
+        setForm({ enabled: resource.data.enabled, reminderTime: resource.data.reminderTime, siteUrl: resource.data.siteUrl, provider: resource.data.provider, webhookUrl: resource.data.webhookUrl, webhookToken: "" }); }, [resource.data]);
     const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(""); setSuccess(""); try {
         await apiRequest("/api/admin/reminders", { method: "PUT", body: JSON.stringify(form) });
         setSuccess("提醒设置已保存。");
@@ -105,11 +105,37 @@ function ReminderManager() {
     finally {
         setBusy(false);
     } };
-    return <section><div className="section-toolbar"><div><h2>微信提醒</h2><p className="muted">每日提醒未完成且已绑定的成员，每人每天最多一次。</p></div></div><Feedback error={resource.error} loading={resource.loading} retry={resource.reload}/>
-    {resource.data && <><div className="provider-status">{[{ key: "token" as const, label: "pushplus Token" }, { key: "secretKey" as const, label: "pushplus SecretKey" }, { key: "callbackSecret" as const, label: "回调密钥" }].map(item => <div key={item.key}><span>{item.label}</span><span className={`status-tag ${resource.data?.configured[item.key] ? "success" : ""}`}>{resource.data?.configured[item.key] ? "已配置" : "未配置"}</span></div>)}</div>
-      {!Object.values(resource.data.configured).every(Boolean) && <p className="notice">微信提醒尚未就绪。补齐 pushplus 配置后，成员才能扫码绑定。</p>}
-      <form className="settings-form" onSubmit={event => void submit(event)}><label>提醒时间（北京时间）<input type="time" value={form.reminderTime} onChange={event => setForm({ ...form, reminderTime: event.target.value })} required/></label><label>打卡网站公开地址<input type="url" value={form.siteUrl} onChange={event => setForm({ ...form, siteUrl: event.target.value })} placeholder="https://你的打卡域名"/><small>用于手机打开打卡页及接收绑定、投递结果回调。</small></label><label className="checkbox-field"><input type="checkbox" checked={form.enabled} onChange={event => setForm({ ...form, enabled: event.target.checked })}/>开启每日自动提醒</label>{error && <p className="form-error" role="alert">{error}</p>}{success && <p className="success-notice" role="status">{success}</p>}<button className="primary-button" disabled={busy}>{busy ? "正在保存…" : "保存提醒设置"}</button></form>
-      {resource.data.callbackUrl && <div className="callback-setting"><h3>pushplus 回调地址</h3><p className="muted">将此地址填入 pushplus 的“功能设置 → 回调地址”，用于扫码绑定与发送结果更新。</p><input aria-label="pushplus 回调地址" readOnly value={resource.data.callbackUrl}/><button className="secondary-button small" onClick={() => void navigator.clipboard.writeText(resource.data!.callbackUrl!).then(() => setSuccess("回调地址已复制。")).catch(() => setError("复制失败，请手动复制。"))}>复制地址</button></div>}
+    const sendTest = async () => {
+        setBusy(true); setError(""); setSuccess("");
+        try {
+            await apiRequest("/api/admin/reminders/test", { method: "POST" });
+            setSuccess("推送服务已受理测试通知，请在微信中确认收到。");
+        } catch (cause) { setError(message(cause)); }
+        finally { setBusy(false); }
+    };
+    const webhookChanged = !resource.data || form.webhookUrl !== resource.data.webhookUrl || Boolean(form.webhookToken.trim());
+    return <section><div className="section-toolbar"><div><h2>通知提醒</h2><p className="muted">选择通知方式，设置每日提醒时间。</p></div></div><Feedback error={resource.error} loading={resource.loading} retry={resource.reload}/>
+    {resource.data && <>
+      <form className="settings-form" onSubmit={event => void submit(event)}>
+        <label>通知方式<select value={form.provider} onChange={event => setForm({ ...form, provider: event.target.value as "pushplus" | "webhook" })}><option value="pushplus">pushplus · 成员提醒</option><option value="webhook">Webhook · 团队汇总</option></select></label>
+        {form.provider === "webhook" ? <>
+          <p className="notice">每天向 Token 绑定的微信发送一条团队未完成汇总。成员无需单独绑定微信；全部完成或当天没有任务时不发送。</p>
+          <label>Webhook 地址<input type="url" value={form.webhookUrl} onChange={event => setForm({ ...form, webhookUrl: event.target.value })} placeholder="https://push.188876.xyz/send" required/><small>使用 HTTPS 接口，按 token、title、content 三个字段发送 JSON。</small></label>
+          <label>Webhook Token<input type="password" autoComplete="new-password" value={form.webhookToken} onChange={event => setForm({ ...form, webhookToken: event.target.value })} placeholder={resource.data.webhookTokenConfigured ? "已配置，留空保留原 Token" : "输入推送服务的 Token"} required={!resource.data.webhookTokenConfigured}/><small>{resource.data.webhookTokenConfigured ? "Token 已配置，保存后不会回显。" : "Token 仅用于服务端发送通知。"}</small></label>
+        </> : <>
+          <p className="notice">每日提醒未完成且已绑定的成员，每人每天最多一次。</p>
+          <div className="provider-status">{[{ key: "token" as const, label: "pushplus Token" }, { key: "secretKey" as const, label: "pushplus SecretKey" }, { key: "callbackSecret" as const, label: "回调密钥" }].map(item => <div key={item.key}><span>{item.label}</span><span className={`status-tag ${resource.data?.configured[item.key] ? "success" : ""}`}>{resource.data?.configured[item.key] ? "已配置" : "未配置"}</span></div>)}</div>
+          {!Object.values(resource.data.configured).every(Boolean) && <p className="notice">补齐 pushplus 配置后，成员才能扫码绑定。</p>}
+        </>}
+        <label>提醒时间（北京时间）<input type="time" value={form.reminderTime} onChange={event => setForm({ ...form, reminderTime: event.target.value })} required/></label>
+        <label>打卡网站公开地址<input type="url" value={form.siteUrl} onChange={event => setForm({ ...form, siteUrl: event.target.value })} placeholder="https://你的打卡域名"/><small>用于在手机打开打卡页。</small></label>
+        <label className="checkbox-field"><input type="checkbox" checked={form.enabled} onChange={event => setForm({ ...form, enabled: event.target.checked })}/>开启每日自动提醒</label>
+        {error && <p className="form-error" role="alert">{error}</p>}{success && <p className="success-notice" role="status">{success}</p>}
+        <div className="form-actions"><button className="primary-button" disabled={busy}>{busy ? "正在处理…" : "保存提醒设置"}</button>
+        {form.provider === "webhook" && <button type="button" className="secondary-button" disabled={busy || webhookChanged || !resource.data.webhookTokenConfigured || !resource.data.webhookUrl} onClick={() => void sendTest()}>发送测试通知</button>}</div>
+        {form.provider === "webhook" && webhookChanged && <small>保存配置后可发送一条真实测试通知。</small>}
+      </form>
+      {form.provider === "pushplus" && resource.data.callbackUrl && <div className="callback-setting"><h3>pushplus 回调地址</h3><p className="muted">将此地址填入 pushplus 的“功能设置 → 回调地址”，用于扫码绑定与发送结果更新。</p><input aria-label="pushplus 回调地址" readOnly value={resource.data.callbackUrl}/><button className="secondary-button small" onClick={() => void navigator.clipboard.writeText(resource.data!.callbackUrl!).then(() => setSuccess("回调地址已复制。")).catch(() => setError("复制失败，请手动复制。"))}>复制地址</button></div>}
     </>}
   </section>;
 }

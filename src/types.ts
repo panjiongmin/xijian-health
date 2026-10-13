@@ -25,11 +25,13 @@ export type ManagedTask = Pick<Task, "id" | "title" | "description" | "imagePoli
     active: number;
 };
 export type TodayData = {
+    reminderProvider: "pushplus" | "webhook";
     date: string;
     tasks: Task[];
     reminderTime: string | null;
 };
 export type Notifications = {
+    provider: "pushplus" | "webhook";
     enabled: boolean;
     bound: boolean;
     available: boolean;
@@ -37,6 +39,9 @@ export type Notifications = {
     reminderTime: string;
 };
 export type ReminderConfig = {
+    provider: "pushplus" | "webhook";
+    webhookUrl: string;
+    webhookTokenConfigured: boolean;
     enabled: boolean;
     reminderTime: string;
     siteUrl: string;
