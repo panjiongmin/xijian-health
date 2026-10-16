@@ -34,7 +34,7 @@ export function AuthPage({ mode }: {
     finally {
         setBusy(false);
     } };
-    return <div className="page-width auth-page"><div className="auth-intro"><CheckSquare weight="duotone"/><h1>把小事，<br />做成每天。</h1><p>和团队一起设定目标、记录完成。<br />从今天的一次打卡开始。</p><div className="auth-note">任务打卡 · 图片记录 · 微信提醒</div></div>
+    return <div className="page-width auth-page"><div className="auth-intro"><CheckSquare weight="fill"/><h1>把小事，<br />做成每天。</h1><p>和团队一起设定目标、记录完成。<br />从今天的一次打卡开始。</p><div className="auth-note">任务打卡 · 图片记录 · 微信提醒</div></div>
     <form className="auth-form" onSubmit={event => void submit(event)}><h2>{isRegister ? "创建成员账号" : "登录息间"}</h2><p className="muted">{isRegister ? "加入团队，开始每日打卡。" : "继续完成今天的任务。"}</p>
       {isRegister && (inviteRequired || inviteCode) && <label>邀请码<input value={inviteCode} onChange={event => setInviteCode(event.target.value.toUpperCase())} maxLength={8} autoComplete="off" autoCapitalize="characters" required/><small>向团队管理员索取。</small></label>}
       {isRegister && <label>昵称<input value={displayName} onChange={event => setDisplayName(event.target.value)} minLength={2} maxLength={20} autoComplete="nickname" required/></label>}

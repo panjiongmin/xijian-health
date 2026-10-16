@@ -72,7 +72,7 @@ export function TaskCard({ task, date, onChange, readOnly = false }: {
     };
     const shownImages = task.checkinId ? task.images : images;
     return <article className={`task-row ${task.checkinId ? "is-complete" : ""}`}>
-    <span className="task-indicator" aria-hidden="true">{task.checkinId ? <Check weight="thin"/> : <span />}</span>
+    <span className="task-indicator" aria-hidden="true">{task.checkinId ? <Check weight="bold"/> : <span />}</span>
     <div className="task-body"><div className="task-title"><h2>{task.title}</h2><span className={`status-tag ${task.checkinId ? "success" : ""}`}>{task.checkinId ? `已完成${completedTime(task.completedAt) ? ` · ${completedTime(task.completedAt)}` : ""}` : task.imagePolicy === "required" ? "需上传图片" : task.imagePolicy === "optional" ? "图片选填" : "一键打卡"}</span></div>
       {task.description && !task.checkinId && <p>{task.description}</p>}
       {shownImages.length > 0 && <div className="image-strip">{shownImages.map(image => <div className="image-thumb" key={image.id}><a href={image.url} target="_blank" rel="noreferrer"><img src={image.url} alt={`${task.title}的打卡图片`} loading="lazy"/></a>{!task.checkinId && !readOnly && <button disabled={busy} aria-label="移除图片" className="image-remove" onClick={() => setImages(current => current.filter(item => item.id !== image.id))}><X /></button>}</div>)}</div>}

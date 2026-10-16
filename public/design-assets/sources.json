@@ -27,6 +27,28 @@
       "source": "https://cdn.prod.website-files.com/5e51c674258ffe10d286d30a/5e53554e46008016518d52e4_peep-36.svg",
       "creator": "Pablo Stanley",
       "project": "https://www.openpeeps.com/"
+    },
+    {
+      "name": "clay-loving",
+      "file": "clay-loving.svg",
+      "variants": [
+        "clay-loving-dark.svg"
+      ],
+      "source": "https://opendoodles.s3-us-west-1.amazonaws.com/loving.svg",
+      "creator": "Pablo Stanley",
+      "project": "https://www.opendoodles.com/",
+      "modification": "recolored"
+    },
+    {
+      "name": "clay-meditating",
+      "file": "clay-meditating.svg",
+      "variants": [
+        "clay-meditating-dark.svg"
+      ],
+      "source": "https://opendoodles.s3-us-west-1.amazonaws.com/meditating.svg",
+      "creator": "Pablo Stanley",
+      "project": "https://www.opendoodles.com/",
+      "modification": "recolored"
     }
   ],
   "icons": {
