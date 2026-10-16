@@ -5,6 +5,7 @@
 ## 插画
 
 - `reading.svg`、`running.svg`、`meditating.svg`：Pablo Stanley 的 [Open Doodles](https://www.opendoodles.com/)。官网允许免费商业与个人使用。原始下载地址见 `sources.json`，图形保持原样。
+- `clay-loving.svg`、`clay-loving-dark.svg`、`clay-meditating.svg`、`clay-meditating-dark.svg`：正式界面「黏土 3D」主题使用，取自 Open Doodles 的 loving 与 meditating，只替换了黑色线条与粉色填充的颜色，图形未改动。
 - `peep.svg`：Pablo Stanley 的 [Open Peeps](https://www.openpeeps.com/)，[CC0](https://creativecommons.org/publicdomain/zero/1.0/)。用于成员头像示例，不代表真实用户。
 
 ## 图标
