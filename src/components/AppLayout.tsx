@@ -28,7 +28,7 @@ export function AppLayout() {
       <Link className="brand" to="/"><span className="brand-mark"><Notebook weight="thin"/></span><span>息间<span className="brand-note">我的日常记录本</span></span></Link>
       <div className="header-actions"><button className="icon-button" aria-label={dark ? "切换浅色模式" : "切换深色模式"} onClick={() => setDark(!dark)}>{dark ? <Sun /> : <Moon />}</button>{user && <Link className="profile-link" to="/me"><span className="avatar">{user.displayName.slice(0, 1)}</span><span className="profile-name">{user.displayName}</span></Link>}</div>
     </div></header>
-    <main className="main-content"><div className="journal-book">
+    <main className="main-content"><div className="journal-desk"><div className="journal-book">
       <aside className="journal-cover" aria-label="今日手帐日期">
         <p className="journal-year">{date.slice(0, 4)} 年 · 每日手帐</p>
         <div className="journal-date"><h2>{monthLabel}<br />{Number(date.slice(8))} 日</h2><p>{weekdayLabel}</p></div>
@@ -45,7 +45,7 @@ export function AppLayout() {
       <div className="journal-paper"><Outlet /></div>
     </div>
     {user && <nav className="journal-tabs" aria-label="主导航">{links.map(({to,label,icon:Icon}) => <NavLink key={to} to={to} end={to === "/"}><Icon weight="thin"/>{label}</NavLink>)}</nav>}
-    </main>
+    </div></main>
     <footer className="site-footer">息间 · 把每天的小事，认真完成。<span>北京时间 · Asia/Shanghai</span></footer>
     {user && <nav className="mobile-nav" aria-label="移动端导航">{links.map(({ to, label, icon: Icon }) => <NavLink key={to} to={to} end={to === "/"}><Icon /><span>{label}</span></NavLink>)}</nav>}
   </div>;

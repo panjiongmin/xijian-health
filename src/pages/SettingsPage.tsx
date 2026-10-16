@@ -1,10 +1,34 @@
-import { Bell, SignOut, QrCode } from "@phosphor-icons/react";
-import { useEffect, useState } from "react";
+import { Bell, SignOut, QrCode, Key } from "@phosphor-icons/react";
+import { useEffect, useState, type FormEvent } from "react";
 import { apiRequest } from "../api";
 import { useAuth } from "../auth-context";
 import { Feedback } from "../components/Feedback";
 import type { Notifications } from "../types";
 import { message, useResource } from "../use-resource";
+function AccountForms() {
+    const { user, refresh } = useAuth();
+    const [displayName, setDisplayName] = useState(user?.displayName || "");
+    const [currentPassword, setCurrentPassword] = useState("");
+    const [newPassword, setNewPassword] = useState("");
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState("");
+    const [success, setSuccess] = useState("");
+    const run = async (event: FormEvent, operation: () => Promise<unknown>, done: string) => { event.preventDefault(); setBusy(true); setError(""); setSuccess(""); try {
+        await operation();
+        setSuccess(done);
+    }
+    catch (cause) {
+        setError(message(cause));
+    }
+    finally {
+        setBusy(false);
+    } };
+    return <section className="settings-section"><h2 className="icon-heading"><Key />账号资料</h2>
+    <form className="inline-form" onSubmit={event => void run(event, async () => { await apiRequest("/api/me", { method: "PUT", body: JSON.stringify({ displayName }) }); await refresh(); }, "昵称已更新。")}><label>昵称<input value={displayName} onChange={event => setDisplayName(event.target.value)} minLength={2} maxLength={20} autoComplete="nickname" required/></label><button className="secondary-button" disabled={busy || displayName.trim() === user?.displayName}>保存昵称</button></form>
+    <form className="inline-form" onSubmit={event => void run(event, async () => { await apiRequest("/api/me/password", { method: "PUT", body: JSON.stringify({ currentPassword, newPassword }) }); setCurrentPassword(""); setNewPassword(""); }, "密码已修改，其他设备需要重新登录。")}><label>当前密码<input type="password" value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} autoComplete="current-password" required/></label><label>新密码<input type="password" value={newPassword} onChange={event => setNewPassword(event.target.value)} autoComplete="new-password" minLength={8} maxLength={72} placeholder="至少 8 位" required/></label><button className="secondary-button" disabled={busy}>修改密码</button></form>
+    {error && <p className="form-error" role="alert">{error}</p>}{success && <p className="success-notice" role="status">{success}</p>}
+  </section>;
+}
 export function SettingsPage() {
     const { user, logout } = useAuth();
     const resource = useResource<Notifications>("/api/notifications");
@@ -33,6 +57,7 @@ export function SettingsPage() {
     } };
     return <div className="page-width narrow-page"><div className="page-heading"><div><h1>个人设置</h1><p>管理账号与微信提醒。</p></div></div>
     <section className="settings-section"><div className="account-heading"><span className="avatar large">{user?.displayName.slice(0, 1)}</span><div><h2>{user?.displayName}</h2><p>{user?.email}</p></div><span className="status-tag">{user?.role === "admin" ? "管理员" : "成员"}</span></div><button className="secondary-button" disabled={busy} onClick={() => void act(logout)}><SignOut />退出登录</button></section>
+    <AccountForms />
     <section className="settings-section"><h2 className="icon-heading"><Bell />微信打卡提醒</h2><p className="muted">每天最多提醒一次；当天任务全部完成后不再提醒。</p><Feedback error={resource.error} loading={resource.loading} retry={resource.reload}/>
       {resource.data && <>{resource.data.provider === "webhook" ? <p className="notice">{resource.data.remindersEnabled ? `管理员每天 ${resource.data.reminderTime} 接收团队未完成汇总。` : "管理员暂未开启团队汇总提醒。"}此方式不需要成员单独绑定微信。</p> : <>{!resource.data.available && <p className="notice">管理员正在配置微信提醒，配置完成后即可扫码绑定。</p>}
         {resource.data.bound ? <><div className="setting-row"><div><strong>接收每日提醒</strong><p>{resource.data.remindersEnabled ? `每天 ${resource.data.reminderTime}（北京时间）` : "管理员暂未开启自动提醒"}</p></div><input aria-label="接收每日微信提醒" type="checkbox" role="switch" checked={resource.data.enabled} disabled={busy} onChange={event => void act(() => apiRequest("/api/notifications", { method: "PUT", body: JSON.stringify({ enabled: event.target.checked }) }))}/></div><button className="text-button danger" disabled={busy} onClick={() => void act(async () => { await apiRequest("/api/notifications", { method: "DELETE" }); setQr(null); })}>解除微信绑定</button></>
