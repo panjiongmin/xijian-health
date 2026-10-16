@@ -1,5 +1,6 @@
-import { PencilSimple, Plus, Check, UsersThree, Bell, ListChecks } from "@phosphor-icons/react";
+import { PencilSimple, Plus, Check, UsersThree, Bell, ListChecks, CaretDown, IdentificationCard } from "@phosphor-icons/react";
 import { useEffect, useState, type FormEvent } from "react";
+import { useAuth } from "../auth-context";
 import { apiRequest } from "../api";
 import { Feedback } from "../components/Feedback";
 import type { ManagedTask, Member, ReminderConfig, Task } from "../types";
@@ -69,20 +70,83 @@ function TaskManager() {
   </section>;
 }
 function MemberOverview() {
+    const { user } = useAuth();
     const [date, setDate] = useState(dateInBeijing);
+    const [pendingOnly, setPendingOnly] = useState(false);
+    const [includeSelf, setIncludeSelf] = useState(true);
+    const [expanded, setExpanded] = useState<string[]>([]);
     const resource = useResource<{
         date: string;
         tasks: Task[];
         members: Member[];
     }>(`/api/admin/overview?date=${date}`);
-    const complete = resource.data?.members.filter(member => member.tasks.length > 0 && member.tasks.every(task => task.checkinId)).length || 0;
-    return <section><div className="section-toolbar"><div><h2>成员完成情况</h2><p className="muted">查看当天进度和打卡图片。</p></div><label className="date-filter">日期<input type="date" value={date} max={dateInBeijing()} onChange={event => { if (event.target.value)
+    const doneCount = (member: Member) => member.tasks.filter(task => task.checkinId).length;
+    const isDone = (member: Member) => member.tasks.length > 0 && doneCount(member) === member.tasks.length;
+    const counted = (resource.data?.members || []).filter(member => includeSelf || member.id !== user?.id);
+    const complete = counted.filter(isDone).length;
+    const shown = counted.filter(member => !pendingOnly || !isDone(member)).map((member, index) => ({ member, index }))
+        .sort((a, b) => (doneCount(a.member) / (a.member.tasks.length || 1)) - (doneCount(b.member) / (b.member.tasks.length || 1)) || a.index - b.index).map(item => item.member);
+    const toggle = (id: string) => setExpanded(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id]);
+    return <section><div className="section-toolbar"><div><h2>成员完成情况</h2><p className="muted">未完成的成员排在前面，点开查看任务和图片。</p></div><label className="date-filter">日期<input type="date" value={date} max={dateInBeijing()} onChange={event => { if (event.target.value)
         setDate(event.target.value); }}/></label></div><Feedback error={resource.error} loading={resource.loading} retry={resource.reload}/>
-    {resource.data && <><div className="overview-summary"><span>{resource.data.members.length} 位成员</span><span>{resource.data.tasks.length} 项任务</span><span>{complete} 位全部完成</span><button className="text-button" onClick={resource.reload}>刷新</button></div>
+    {resource.data && <><div className="overview-summary"><span>{counted.length} 位成员</span><span>{resource.data.tasks.length} 项任务</span><span>{complete} 位全部完成</span><span><strong>{counted.length - complete}</strong> 位未完成</span><button className="text-button" onClick={resource.reload}>刷新</button></div>
+      <div className="overview-filters"><label className="checkbox-field"><input type="checkbox" checked={pendingOnly} onChange={event => setPendingOnly(event.target.checked)}/>只看未完成</label><label className="checkbox-field"><input type="checkbox" checked={includeSelf} onChange={event => setIncludeSelf(event.target.checked)}/>统计管理员本人</label></div>
       {!resource.data.members.length && <div className="empty-state"><UsersThree /><h3>这一天还没有成员</h3><p>成员注册后，会在对应日期显示。</p></div>}
-      <div className="member-list">{resource.data.members.map(member => <article className="member-row" key={member.id}><div className="member-heading"><span className="avatar">{member.displayName.slice(0, 1)}</span><div><h3>{member.displayName}</h3><p>{member.email}</p></div><strong>{member.tasks.filter(task => task.checkinId).length}/{member.tasks.length}</strong>{member.reminder && <span className={`status-tag ${member.reminder.status === "failed" ? "error" : ""}`} title={member.reminder.errorCode || undefined}>提醒：{deliveryLabels[member.reminder.status] || member.reminder.status}</span>}</div>
-        <div className="member-tasks">{member.tasks.map(task => <div className="member-task" key={task.id}><span className={task.checkinId ? "done-label" : "muted"}>{task.checkinId ? <Check weight="bold"/> : <span className="pending-dot"/>}{task.title}</span><span className="muted">{task.checkinId ? "已完成" : "未完成"}</span>{task.images.length > 0 && <div className="image-strip">{task.images.map(image => <a key={image.id} className="image-thumb" href={image.url} target="_blank" rel="noreferrer"><img loading="lazy" src={image.url} alt={`${member.displayName}的${task.title}打卡图片`}/></a>)}</div>}</div>)}</div>
-      </article>)}</div>
+      {resource.data.members.length > 0 && !shown.length && <p className="muted overview-empty">{pendingOnly ? "所有成员都已完成。" : "没有需要显示的成员。"}</p>}
+      <div className="member-list">{shown.map(member => {
+            const open = expanded.includes(member.id);
+            const pending = member.tasks.filter(task => !task.checkinId);
+            return <article className={`member-row ${open ? "is-open" : ""}`} key={member.id}><button className="member-heading" aria-expanded={open} aria-controls={`member-${member.id}`} onClick={() => toggle(member.id)}><span className="avatar">{member.displayName.slice(0, 1)}</span><div className="member-summary"><h3>{member.displayName}</h3><p>{!member.tasks.length ? "当天没有任务" : pending.length ? `未完成：${pending.map(task => task.title).join("、")}` : "全部完成"}</p></div>{member.reminder && <span className={`status-tag ${member.reminder.status === "failed" ? "error" : ""}`} title={member.reminder.errorCode || undefined}>提醒：{deliveryLabels[member.reminder.status] || member.reminder.status}</span>}<span className="member-progress"><progress max={member.tasks.length || 1} value={doneCount(member)}/><strong>{doneCount(member)}/{member.tasks.length}</strong></span><CaretDown className="member-caret" aria-hidden="true"/></button>
+        {open && <div className="member-tasks" id={`member-${member.id}`}><p className="muted member-email">{member.email}</p>{member.tasks.map(task => <div className="member-task" key={task.id}><span className={task.checkinId ? "done-label" : "muted"}>{task.checkinId ? <Check weight="bold"/> : <span className="pending-dot"/>}{task.title}</span><span className="muted">{task.checkinId ? "已完成" : "未完成"}</span>{task.images.length > 0 && <div className="image-strip">{task.images.map(image => <a key={image.id} className="image-thumb" href={image.url} target="_blank" rel="noreferrer"><img loading="lazy" src={image.url} alt={`${member.displayName}的${task.title}打卡图片`}/></a>)}</div>}</div>)}</div>}
+      </article>;
+        })}</div>
+    </>}
+  </section>;
+}
+type Account = {
+    id: string;
+    displayName: string;
+    email: string;
+    status: string;
+    createdAt: string;
+    role: "admin" | "member";
+};
+function AccountManager() {
+    const resource = useResource<{
+        inviteCode: string;
+        members: Account[];
+    }>("/api/admin/members");
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState("");
+    const [success, setSuccess] = useState("");
+    const [tempPassword, setTempPassword] = useState<{
+        name: string;
+        password: string;
+    } | null>(null);
+    const act = async (operation: () => Promise<unknown>, done: string) => { setBusy(true); setError(""); setSuccess(""); try {
+        await operation();
+        setSuccess(done);
+        resource.reload();
+    }
+    catch (cause) {
+        setError(message(cause));
+    }
+    finally {
+        setBusy(false);
+    } };
+    const inviteCode = resource.data?.inviteCode || "";
+    const inviteLink = inviteCode ? `${window.location.origin}/register?invite=${inviteCode}` : "";
+    return <section><div className="section-toolbar"><div><h2>成员账号</h2><p className="muted">用邀请码控制谁能注册，停用离开团队的成员。</p></div></div><Feedback error={resource.error} loading={resource.loading} retry={resource.reload}/>
+    {resource.data && <>
+      <div className="invite-panel"><h3>注册邀请码</h3>{inviteCode ? <><p className="muted">新成员注册时需要填写邀请码，或直接打开邀请链接。</p><div className="invite-code"><strong>{inviteCode}</strong><button className="secondary-button small" disabled={busy} onClick={() => void navigator.clipboard.writeText(inviteLink).then(() => setSuccess("邀请链接已复制。")).catch(() => setError("复制失败，请手动复制。"))}>复制邀请链接</button></div><div className="row-actions"><button className="text-button" disabled={busy} onClick={() => void act(() => apiRequest("/api/admin/invite", { method: "PUT", body: JSON.stringify({ action: "generate" }) }), "已生成新的邀请码，旧邀请码失效。")}>换一个</button><button className="text-button danger" disabled={busy} onClick={() => { if (window.confirm("关闭后任何人都能直接注册，确定吗？"))
+            void act(() => apiRequest("/api/admin/invite", { method: "PUT", body: JSON.stringify({ action: "clear" }) }), "已关闭邀请码，注册对所有人开放。"); }}>关闭邀请码</button></div></> : <><p className="notice">当前任何拿到网址的人都能注册。生成邀请码后，只有知道邀请码的人才能加入。</p><button className="primary-button" disabled={busy} onClick={() => void act(() => apiRequest("/api/admin/invite", { method: "PUT", body: JSON.stringify({ action: "generate" }) }), "邀请码已生成。")}>生成邀请码</button></>}</div>
+      {error && <p className="form-error" role="alert">{error}</p>}{success && <p className="success-notice" role="status">{success}</p>}
+      {tempPassword && <div className="notice temp-password" role="status"><p>{tempPassword.name} 的临时密码：<strong>{tempPassword.password}</strong></p><p>只显示这一次，请转告对方登录后在个人设置里修改。</p><button className="text-button" onClick={() => setTempPassword(null)}>我已记下</button></div>}
+      <div className="managed-task-list">{resource.data.members.map(member => <article className="managed-task account-row" key={member.id}><div><div className="task-title"><h3>{member.displayName}</h3><span className={`status-tag ${member.status === "active" ? "success" : ""}`}>{member.role === "admin" ? "管理员" : member.status === "active" ? "正常" : "已停用"}</span></div><div className="task-meta">{member.email}</div></div>{member.role !== "admin" && <div className="row-actions"><button className="secondary-button small" disabled={busy} onClick={() => { if (window.confirm(`为 ${member.displayName} 生成临时密码？对方当前的登录会失效。`))
+                void act(async () => { const result = await apiRequest<{
+                    password: string;
+                }>(`/api/admin/members/${member.id}/password`, { method: "POST" }); setTempPassword({ name: member.displayName, password: result.password }); }, "已重置密码。"); }}>重置密码</button><button className={`text-button ${member.status === "active" ? "danger" : ""}`} disabled={busy} onClick={() => { const disable = member.status === "active"; if (!disable || window.confirm(`停用 ${member.displayName}？对方将无法登录，也不再计入统计，历史记录保留。`))
+                void act(() => apiRequest(`/api/admin/members/${member.id}`, { method: "PUT", body: JSON.stringify({ status: disable ? "disabled" : "active" }) }), disable ? "成员已停用。" : "成员已恢复。"); }}>{member.status === "active" ? "停用" : "恢复"}</button></div>}</article>)}</div>
     </>}
   </section>;
 }
@@ -140,9 +204,9 @@ function ReminderManager() {
   </section>;
 }
 export function AdminPage() {
-    const [tab, setTab] = useState<"tasks" | "members" | "reminders">("tasks");
+    const [tab, setTab] = useState<"tasks" | "members" | "accounts" | "reminders">("tasks");
     return <div className="page-width"><div className="page-heading"><div><h1>管理后台</h1><p>安排任务，了解团队每天的完成情况。</p></div><span className="status-tag">管理员</span></div>
-    <div className="admin-tabs" role="tablist" aria-label="管理功能">{[{ key: "tasks" as const, label: "任务管理", icon: ListChecks }, { key: "members" as const, label: "成员记录", icon: UsersThree }, { key: "reminders" as const, label: "提醒设置", icon: Bell }].map(({ key, label, icon: Icon }) => <button key={key} id={`tab-${key}`} role="tab" aria-selected={tab === key} aria-controls="admin-panel" className={tab === key ? "active" : ""} onClick={() => setTab(key)}><Icon />{label}</button>)}</div>
-    <div id="admin-panel" role="tabpanel" aria-labelledby={`tab-${tab}`}>{tab === "tasks" ? <TaskManager /> : tab === "members" ? <MemberOverview /> : <ReminderManager />}</div>
+    <div className="admin-tabs" role="tablist" aria-label="管理功能">{[{ key: "tasks" as const, label: "任务管理", icon: ListChecks }, { key: "members" as const, label: "完成情况", icon: UsersThree }, { key: "accounts" as const, label: "成员账号", icon: IdentificationCard }, { key: "reminders" as const, label: "提醒设置", icon: Bell }].map(({ key, label, icon: Icon }) => <button key={key} id={`tab-${key}`} role="tab" aria-selected={tab === key} aria-controls="admin-panel" className={tab === key ? "active" : ""} onClick={() => setTab(key)}><Icon />{label}</button>)}</div>
+    <div id="admin-panel" role="tabpanel" aria-labelledby={`tab-${tab}`}>{tab === "tasks" ? <TaskManager /> : tab === "members" ? <MemberOverview /> : tab === "accounts" ? <AccountManager /> : <ReminderManager />}</div>
   </div>;
 }

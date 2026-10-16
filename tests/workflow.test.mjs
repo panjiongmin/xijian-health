@@ -11,7 +11,7 @@ test("任务、图片、权限、历史记录和微信提醒完整流程", async
   const originalFetch = globalThis.fetch;
   try {
     const DB = await mf.getD1Database("DB");
-    for(const file of ["0001_initial.sql","0002_r2_assets.sql","0005_daily_tasks.sql","0006_pushplus_receipts.sql","0007_webhook_reminders.sql"]) {
+    for(const file of ["0001_initial.sql","0002_r2_assets.sql","0005_daily_tasks.sql","0006_pushplus_receipts.sql","0007_webhook_reminders.sql","0008_team_access.sql"]) {
       const sql = readFileSync(new URL(`../migrations/${file}`,import.meta.url),"utf8").replace(/--[^\n]*/g,"");
       for(const statement of sql.split(";").map(value=>value.trim()).filter(Boolean)) await DB.prepare(statement).run();
     }
@@ -194,8 +194,33 @@ test("任务、图片、权限、历史记录和微信提醒完整流程", async
     assert.match((await (await request("/api/admin/reminders/test",{cookie:admin,method:"POST"})).json()).error,/40037/);
     globalThis.fetch=async()=>new Response(null,{status:302,headers:{Location:"https://other.example.com/send"}});
     assert.match((await (await request("/api/admin/reminders/test",{cookie:admin,method:"POST"})).json()).error,/重定向/);
-    await request("/api/auth/logout",{cookie:member,method:"POST"});
+    assert.equal((await (await request("/api/auth/options")).json()).inviteRequired,false);
+    assert.equal((await request("/api/admin/members",{cookie:member})).status,403);
+    const invite=(await (await request("/api/admin/invite",{cookie:admin,method:"PUT",body:{action:"generate"}})).json()).inviteCode;
+    assert.match(invite,/^[A-Z2-9]{8}$/);
+    assert.equal((await (await request("/api/auth/options")).json()).inviteRequired,true);
+    assert.equal((await request("/api/auth/register",{method:"POST",body:{email:"stranger@example.test",password,displayName:"陌生人"}})).status,403);
+    assert.equal((await request("/api/auth/register",{method:"POST",body:{email:"invited@example.test",password,displayName:"受邀成员",inviteCode:invite.toLowerCase()}})).status,201);
+    const accounts=(await (await request("/api/admin/members",{cookie:admin})).json()).members;
+    assert.equal(accounts.find(item=>item.email==="admin@example.test").role,"admin");
+    assert.equal((await request("/api/admin/members/admin",{cookie:admin,method:"PUT",body:{status:"disabled"}})).status,400);
+    assert.equal((await request(`/api/admin/members/${memberUser.id}`,{cookie:admin,method:"PUT",body:{status:"disabled"}})).status,200);
     assert.equal((await request("/api/today",{cookie:member})).status,401);
+    assert.equal((await request("/api/auth/login",{method:"POST",body:{email:"member@example.test",password}})).status,401);
+    assert.equal((await request(`/api/admin/members/${memberUser.id}`,{cookie:admin,method:"PUT",body:{status:"active"}})).status,200);
+    const temporary=(await (await request(`/api/admin/members/${memberUser.id}/password`,{cookie:admin,method:"POST"})).json()).password;
+    assert.equal((await request("/api/auth/login",{method:"POST",body:{email:"member@example.test",password}})).status,401);
+    const relogin=await request("/api/auth/login",{method:"POST",body:{email:"member@example.test",password:temporary}});
+    assert.equal(relogin.status,200);
+    const memberAgain=relogin.headers.get("set-cookie").split(";")[0];
+    assert.equal((await request("/api/me/password",{cookie:memberAgain,method:"PUT",body:{currentPassword:"wrong-password",newPassword:password}})).status,400);
+    assert.equal((await request("/api/me/password",{cookie:memberAgain,method:"PUT",body:{currentPassword:temporary,newPassword:password}})).status,200);
+    assert.equal((await request("/api/me",{cookie:memberAgain,method:"PUT",body:{displayName:"新昵称"}})).status,200);
+    assert.equal((await (await request("/api/me",{cookie:memberAgain})).json()).user.displayName,"新昵称");
+    await request("/api/admin/invite",{cookie:admin,method:"PUT",body:{action:"clear"}});
+    assert.equal((await (await request("/api/auth/options")).json()).inviteRequired,false);
+    await request("/api/auth/logout",{cookie:memberAgain,method:"POST"});
+    assert.equal((await request("/api/today",{cookie:memberAgain})).status,401);
   } finally {globalThis.fetch=originalFetch;await mf.dispose();}
 });
 

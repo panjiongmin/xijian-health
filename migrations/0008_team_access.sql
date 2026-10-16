@@ -1,0 +1,7 @@
+CREATE TABLE team_settings (
+  id INTEGER PRIMARY KEY CHECK(id = 1),
+  invite_code TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT OR IGNORE INTO team_settings(id) VALUES(1);

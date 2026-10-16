@@ -188,6 +188,9 @@ async function handleRegister(request: Request, env: AppEnv): Promise<Response> 
         return error("密码长度需要在 8 到 72 位之间。", 400);
     if (displayName.length < 2 || displayName.length > 20)
         return error("昵称长度需要在 2 到 20 个字符之间。", 400);
+    const inviteCode = await teamInviteCode(env);
+    if (inviteCode && readString(body, "inviteCode").toUpperCase() !== inviteCode)
+        return error("邀请码不正确，请向管理员确认。", 403);
     const existing = await env.DB.prepare("SELECT id FROM users WHERE email = ?1 LIMIT 1").bind(email).first();
     if (existing)
         return error("这个邮箱已经注册，请直接登录。", 409);
@@ -755,6 +758,107 @@ export async function runReminders(env: AppEnv, now = new Date()) {
         await env.DB.prepare("DELETE FROM pushplus_receipts WHERE created_at < datetime('now','-7 days')").run();
     }
 }
+async function teamInviteCode(env: AppEnv): Promise<string> {
+    const row = await env.DB.prepare("SELECT invite_code AS inviteCode FROM team_settings WHERE id = 1").first<{
+        inviteCode: string;
+    }>();
+    return row?.inviteCode || "";
+}
+function randomCode(length: number, alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"): string {
+    const bytes = new Uint8Array(length);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes, byte => alphabet[byte % alphabet.length]).join("");
+}
+async function adminMembers(env: AppEnv) {
+    const [users, inviteCode] = await Promise.all([
+        env.DB.prepare("SELECT id,display_name AS displayName,email,status,created_at AS createdAt FROM users WHERE password_hash IS NOT NULL ORDER BY created_at").all<{
+            id: string;
+            displayName: string;
+            email: string;
+            status: string;
+            createdAt: string;
+        }>(),
+        teamInviteCode(env),
+    ]);
+    const admin = (env.ADMIN_EMAIL || "").toLowerCase();
+    return json({ inviteCode, members: users.results.map(user => ({ ...user, role: user.email.toLowerCase() === admin ? "admin" : "member" })) });
+}
+async function saveInvite(request: Request, env: AppEnv) {
+    const body = await readBody(request);
+    const action = body ? readString(body, "action") : "";
+    if (!["generate", "clear"].includes(action))
+        return error("操作无效。", 400);
+    const inviteCode = action === "generate" ? randomCode(8) : "";
+    await env.DB.prepare("UPDATE team_settings SET invite_code=?1, updated_at=CURRENT_TIMESTAMP WHERE id=1").bind(inviteCode).run();
+    return json({ inviteCode });
+}
+async function managedMember(env: AppEnv, id: string) {
+    const member = await env.DB.prepare("SELECT id,email FROM users WHERE id=?1 AND password_hash IS NOT NULL LIMIT 1").bind(id).first<{
+        id: string;
+        email: string;
+    }>();
+    if (!member)
+        return { problem: error("没有找到这个成员。", 404) };
+    if (member.email.toLowerCase() === (env.ADMIN_EMAIL || "").toLowerCase())
+        return { problem: error("不能修改管理员账号。", 400) };
+    return { member };
+}
+async function setMemberStatus(request: Request, env: AppEnv, id: string) {
+    const body = await readBody(request);
+    const status = body ? readString(body, "status") : "";
+    if (!["active", "disabled"].includes(status))
+        return error("状态无效。", 400);
+    const { problem } = await managedMember(env, id);
+    if (problem)
+        return problem;
+    await env.DB.batch([
+        env.DB.prepare("UPDATE users SET status=?2, updated_at=CURRENT_TIMESTAMP WHERE id=?1").bind(id, status),
+        ...(status === "disabled" ? [env.DB.prepare("DELETE FROM sessions WHERE user_id=?1").bind(id)] : []),
+    ]);
+    return json({ ok: true });
+}
+async function resetMemberPassword(env: AppEnv, id: string) {
+    const { problem } = await managedMember(env, id);
+    if (problem)
+        return problem;
+    const password = randomCode(10, "abcdefghjkmnpqrstuvwxyz23456789");
+    await env.DB.batch([
+        env.DB.prepare("UPDATE users SET password_hash=?2, updated_at=CURRENT_TIMESTAMP WHERE id=?1").bind(id, await hashPassword(password)),
+        env.DB.prepare("DELETE FROM sessions WHERE user_id=?1").bind(id),
+    ]);
+    return json({ password });
+}
+async function updateProfile(request: Request, env: AppEnv, user: SessionUserRow) {
+    const body = await readBody(request);
+    const displayName = body ? readString(body, "displayName") : "";
+    if (displayName.length < 2 || displayName.length > 20)
+        return error("昵称长度需要在 2 到 20 个字符之间。", 400);
+    await env.DB.batch([
+        env.DB.prepare("UPDATE users SET display_name=?2, updated_at=CURRENT_TIMESTAMP WHERE id=?1").bind(user.id, displayName),
+        env.DB.prepare("UPDATE community_profiles SET nickname=?2 WHERE user_id=?1").bind(user.id, displayName),
+    ]);
+    return json({ ok: true });
+}
+async function changePassword(request: Request, env: AppEnv, user: SessionUserRow) {
+    const body = await readBody(request);
+    if (!body)
+        return error("请求内容无效。", 400);
+    const currentPassword = readString(body, "currentPassword");
+    const newPassword = readString(body, "newPassword");
+    if (newPassword.length < 8 || newPassword.length > 72)
+        return error("新密码长度需要在 8 到 72 位之间。", 400);
+    const row = await env.DB.prepare("SELECT password_hash AS passwordHash FROM users WHERE id=?1").bind(user.id).first<{
+        passwordHash: string | null;
+    }>();
+    if (!row?.passwordHash || !(await verifyPassword(currentPassword, row.passwordHash)))
+        return error("当前密码不正确。", 400);
+    const tokenHash = await sha256Hex(getCookie(request, "xijian_session") || "");
+    await env.DB.batch([
+        env.DB.prepare("UPDATE users SET password_hash=?2, updated_at=CURRENT_TIMESTAMP WHERE id=?1").bind(user.id, await hashPassword(newPassword)),
+        env.DB.prepare("DELETE FROM sessions WHERE user_id=?1 AND token_hash<>?2").bind(user.id, tokenHash),
+    ]);
+    return json({ ok: true });
+}
 async function route(request: Request, env: AppEnv): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
@@ -769,6 +873,8 @@ async function route(request: Request, env: AppEnv): Promise<Response> {
     }
     if (path === "/api/health" && method === "GET")
         return json({ status: "ok" });
+    if (path === "/api/auth/options" && method === "GET")
+        return json({ inviteRequired: Boolean(await teamInviteCode(env)) });
     if (path === "/api/auth/register" && method === "POST") {
         const body = await readBody(request.clone());
         if (body && readString(body, "email").toLowerCase() === env.ADMIN_EMAIL?.toLowerCase())
@@ -784,6 +890,10 @@ async function route(request: Request, env: AppEnv): Promise<Response> {
         return json({ user: user ? publicUser(user) : null });
     if (!user)
         return error("请先登录。", 401);
+    if (path === "/api/me" && method === "PUT")
+        return updateProfile(request, env, user);
+    if (path === "/api/me/password" && method === "PUT")
+        return changePassword(request, env, user);
     if (path === "/api/today" && method === "GET")
         return today(env, user);
     if (path === "/api/records" && method === "GET")
@@ -821,6 +931,15 @@ async function route(request: Request, env: AppEnv): Promise<Response> {
         return saveTask(request, env, user, editMatch[1]);
     if (path === "/api/admin/overview" && method === "GET")
         return adminOverview(request, env);
+    if (path === "/api/admin/members" && method === "GET")
+        return adminMembers(env);
+    if (path === "/api/admin/invite" && method === "PUT")
+        return saveInvite(request, env);
+    const memberMatch = path.match(/^\/api\/admin\/members\/([a-zA-Z0-9-]+)(\/password)?$/);
+    if (memberMatch && !memberMatch[2] && method === "PUT")
+        return setMemberStatus(request, env, memberMatch[1]);
+    if (memberMatch && memberMatch[2] && method === "POST")
+        return resetMemberPassword(env, memberMatch[1]);
     if (path === "/api/admin/reminders" && method === "GET")
         return adminReminderSettings(env);
     if (path === "/api/admin/reminders" && method === "PUT")
